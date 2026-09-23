@@ -1,15 +1,6 @@
 import { NextResponse } from "next/server";
 import { getSessionFromRequest } from "@/lib/auth";
-
-const instructions = `
-You are a patient Finnish conversation tutor.
-
-The learner speaks Danish or English. Use English for explanations unless the learner asks for Danish. Use Finnish for short target phrases and examples.
-
-This is a repetition exercise. Say one short Finnish phrase at a time, then pause and let the learner repeat it. Do not introduce many new words at once. Correct gently: first acknowledge the attempt, then give the correct Finnish phrase slowly, followed by a short English explanation.
-
-Prefer clear, slow Finnish pronunciation. Keep the conversation suitable for hands-free audio. Never claim that a word has been mastered; the application will track that later.
-`;
+import { attachLiveSessionId, beginPracticeSession, getTutorInstructions } from "@/lib/learning";
 
 export async function POST(request: Request) {
   if (!(await getSessionFromRequest(request))) {
@@ -25,6 +16,11 @@ export async function POST(request: Request) {
   if (!apiKey) {
     return NextResponse.json({ error: "OPENAI_API_KEY mangler på serveren." }, { status: 503 });
   }
+
+  const [{ instructions, snapshot }, appSessionId] = await Promise.all([
+    getTutorInstructions(),
+    beginPracticeSession(),
+  ]);
 
   const response = await fetch("https://api.openai.com/v1/live/sessions", {
     method: "POST",
@@ -47,7 +43,16 @@ export async function POST(request: Request) {
     );
   }
 
-  return NextResponse.json(result, {
+  const liveSessionId = result && typeof result === "object" && "session" in result
+    ? ((result as { session?: { id?: unknown } }).session?.id ?? null)
+    : null;
+  await attachLiveSessionId(appSessionId, typeof liveSessionId === "string" ? liveSessionId : null);
+
+  return NextResponse.json({
+    ...(result && typeof result === "object" ? result : {}),
+    app_session_id: appSessionId,
+    learning: snapshot,
+  }, {
     status: response.status,
     headers: { "Cache-Control": "no-store" },
   });

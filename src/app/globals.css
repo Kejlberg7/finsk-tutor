@@ -62,6 +62,60 @@ p { line-height: 1.55; }
 
 .intro { color: var(--muted); max-width: 52ch; }
 
+.learning {
+  margin-top: 26px;
+  padding: 20px;
+  border: 1px solid var(--rule);
+  border-radius: 18px;
+  background: #f8faf7;
+}
+
+.learning-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.learning-heading strong { display: block; margin-top: 3px; font-size: 1.12rem; }
+
+.label {
+  display: block;
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 750;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.memory {
+  flex: none;
+  padding: 6px 9px;
+  border-radius: 999px;
+  background: #f8e7e8;
+  color: var(--danger);
+  font-size: 0.72rem;
+  font-weight: 750;
+}
+
+.memory.ready { background: var(--accent-soft); color: var(--accent); }
+
+.learning-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.learning-grid > div { padding: 14px; border-radius: 13px; background: white; }
+.learning-grid p { margin: 5px 0 0; font-size: 0.94rem; }
+
+.review-line { margin-top: 16px; color: var(--muted); font-size: 0.9rem; }
+.review-line strong { color: var(--ink); }
+
+.word-list { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; }
+.word-list span { padding: 5px 9px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 0.82rem; font-weight: 700; }
+
 .controls { display: flex; flex-wrap: wrap; gap: 12px; margin: 30px 0 18px; }
 
 .primary, .secondary, .danger {
@@ -82,6 +136,11 @@ p { line-height: 1.55; }
   font-size: 0.94rem;
 }
 
+audio { width: 100%; margin-top: 8px; }
+
+.transcript-wrap { margin-top: 22px; }
+.transcript-wrap summary { color: var(--accent); cursor: pointer; font-weight: 700; }
+
 .transcript {
   display: grid;
   gap: 12px;
@@ -96,3 +155,11 @@ p { line-height: 1.55; }
 .login { width: min(100%, 420px); margin: 12vh auto 0; }
 .login input { width: 100%; min-height: 52px; padding: 0 15px; border: 1px solid var(--rule); border-radius: 12px; background: white; }
 .login label { display: block; margin: 20px 0 8px; font-weight: 700; }
+
+@media (max-width: 520px) {
+  .shell { padding: 10px; }
+  .card { padding: 24px 18px; border-radius: 20px; }
+  .learning { padding: 16px; }
+  .learning-grid { grid-template-columns: 1fr; }
+  .controls button { flex: 1 1 100%; }
+}
