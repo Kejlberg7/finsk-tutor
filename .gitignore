@@ -1,0 +1,26 @@
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# Next.js
+/.next/
+/out/
+/build
+
+# local files
+.DS_Store
+*.pem
+*.log
+*.tsbuildinfo
+next-env.d.ts
+.env*
+!.env.example
+
+# Vercel
+.vercel
