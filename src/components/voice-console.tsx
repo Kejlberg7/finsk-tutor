@@ -65,10 +65,14 @@ export default function VoiceConsole() {
 
       const response = await fetch("/api/session", {
         method: "POST",
+        credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sdp }),
       });
-      if (!response.ok) throw new Error((await response.json()).error ?? "Kunne ikke starte samtalen.");
+      if (!response.ok) {
+        const payload: unknown = await response.json().catch(() => null);
+        throw new Error(apiErrorMessage(payload));
+      }
       const result = await response.json() as { transport?: { sdp?: string } };
       if (!result.transport?.sdp) throw new Error("OpenAI returnerede ikke et SDP-svar.");
       await peer.setRemoteDescription({ type: "answer", sdp: result.transport.sdp });
@@ -110,6 +114,17 @@ export default function VoiceConsole() {
       </section>
     </main>
   );
+}
+
+function apiErrorMessage(payload: unknown): string {
+  if (!payload || typeof payload !== "object") return "Kunne ikke starte samtalen.";
+  const error = (payload as { error?: unknown }).error;
+  if (typeof error === "string") return error;
+  if (error && typeof error === "object") {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === "string") return message;
+  }
+  return "Kunne ikke starte samtalen.";
 }
 
 function appendTranscript(items: Transcript[], speaker: Transcript["speaker"], text: string): Transcript[] {

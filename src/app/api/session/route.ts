@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getSession } from "@/lib/auth";
+import { getSessionFromRequest } from "@/lib/auth";
 
 const instructions = `
 You are a patient Finnish conversation tutor.
@@ -12,7 +12,7 @@ Prefer clear, slow Finnish pronunciation. Keep the conversation suitable for han
 `;
 
 export async function POST(request: Request) {
-  if (!(await getSession())) {
+  if (!(await getSessionFromRequest(request))) {
     return NextResponse.json({ error: "Ikke logget ind." }, { status: 401 });
   }
 
@@ -39,6 +39,27 @@ export async function POST(request: Request) {
     cache: "no-store",
   });
 
-  const result = await response.json().catch(() => ({ error: "Ugyldigt svar fra OpenAI." }));
-  return NextResponse.json(result, { status: response.status, headers: { "Cache-Control": "no-store" } });
+  const result: unknown = await response.json().catch(() => null);
+  if (!response.ok) {
+    return NextResponse.json(
+      { error: apiErrorMessage(result) },
+      { status: response.status, headers: { "Cache-Control": "no-store" } },
+    );
+  }
+
+  return NextResponse.json(result, {
+    status: response.status,
+    headers: { "Cache-Control": "no-store" },
+  });
+}
+
+function apiErrorMessage(payload: unknown): string {
+  if (!payload || typeof payload !== "object") return "OpenAI afviste forbindelsen.";
+  const error = (payload as { error?: unknown }).error;
+  if (typeof error === "string") return error;
+  if (error && typeof error === "object") {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === "string") return message;
+  }
+  return "OpenAI afviste forbindelsen.";
 }

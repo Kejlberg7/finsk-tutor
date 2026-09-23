@@ -15,6 +15,20 @@ function getSecret(): Uint8Array {
 
 export async function getSession(): Promise<boolean> {
   const token = (await cookies()).get(COOKIE)?.value;
+  return verifySessionToken(token);
+}
+
+/**
+ * Route handlers receive the authoritative request headers. Reading the
+ * cookie from the request avoids depending on Next's ambient cookie store in
+ * serverless API invocations.
+ */
+export async function getSessionFromRequest(request: Request): Promise<boolean> {
+  const token = readCookie(request.headers.get("cookie"), COOKIE);
+  return verifySessionToken(token);
+}
+
+async function verifySessionToken(token: string | undefined): Promise<boolean> {
   if (!token) return false;
   try {
     await jwtVerify(token, getSecret());
@@ -22,6 +36,15 @@ export async function getSession(): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+function readCookie(header: string | null, name: string): string | undefined {
+  if (!header) return undefined;
+  for (const part of header.split(";")) {
+    const [key, ...value] = part.trim().split("=");
+    if (key === name) return decodeURIComponent(value.join("="));
+  }
+  return undefined;
 }
 
 export async function signIn(password: string): Promise<boolean> {
