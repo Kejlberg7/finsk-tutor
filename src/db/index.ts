@@ -8,11 +8,11 @@ let sqlClient: ReturnType<typeof postgres> | null = null;
 let schemaPromise: Promise<void> | null = null;
 
 export function isDatabaseConfigured(): boolean {
-  return Boolean(process.env.DATABASE_URL?.trim());
+  return Boolean(databaseUrl());
 }
 
 export function getDatabase(): PostgresJsDatabase<typeof schema> {
-  const url = process.env.DATABASE_URL?.trim();
+  const url = databaseUrl();
   if (!url) throw new Error("DATABASE_URL mangler.");
 
   if (!database) {
@@ -21,6 +21,10 @@ export function getDatabase(): PostgresJsDatabase<typeof schema> {
   }
 
   return database;
+}
+
+function databaseUrl(): string | undefined {
+  return process.env.NEON_DATABASE_URL?.trim() || process.env.DATABASE_URL?.trim();
 }
 
 export function ensureDatabaseSchema(): Promise<void> {
