@@ -24,7 +24,9 @@ export function getDatabase(): PostgresJsDatabase<typeof schema> {
 }
 
 function databaseUrl(): string | undefined {
-  return process.env.NEON_DATABASE_URL?.trim() || process.env.DATABASE_URL?.trim();
+  return process.env.NEON_DATABASE_DATABASE_URL?.trim()
+    || process.env.NEON_DATABASE_URL?.trim()
+    || process.env.DATABASE_URL?.trim();
 }
 
 export function ensureDatabaseSchema(): Promise<void> {
