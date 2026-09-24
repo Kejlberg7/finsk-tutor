@@ -277,7 +277,7 @@ export default function VoiceConsole() {
                   </li>
                 ))}
               </ol>
-              <p className="lesson-note">Planen bygger på dine gemte samtaler og opdateres, når du stopper og gemmer. Tutoren kan tilpasse rækkefølgen undervejs.{learning.upcomingLessons.length < 3 ? " Flere blokke vises efter din næste gemte samtale." : ""}</p>
+              <p className="lesson-note">Planen bygger på din seneste gemte samtale og dine øveord. Den opdateres, når du stopper og gemmer. Tutoren kan tilpasse rækkefølgen undervejs.{learning.upcomingLessons.length < 3 ? " Flere blokke vises efter din næste gemte samtale." : ""}</p>
             </section>
           </div>
 

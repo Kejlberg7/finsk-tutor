@@ -221,7 +221,7 @@ export async function completePracticeSession(id: number, transcript: Transcript
     .where(eq(practiceSessions.id, id));
 
   try {
-    const review = await analyseTranscript(cleanTranscript);
+    const review = await analyseTranscript(cleanTranscript, await getLearningSnapshot());
     await applyReview(review);
     await db
       .update(practiceSessions)
@@ -237,7 +237,7 @@ export async function completePracticeSession(id: number, transcript: Transcript
   }
 }
 
-async function analyseTranscript(transcript: TranscriptLine[]): Promise<SessionReview> {
+async function analyseTranscript(transcript: TranscriptLine[], memory: LearningSnapshot): Promise<SessionReview> {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) throw new Error("OPENAI_API_KEY mangler på serveren.");
 
@@ -253,9 +253,25 @@ async function analyseTranscript(transcript: TranscriptLine[]): Promise<SessionR
         {
           role: "system",
           content:
-            "You evaluate a Finnish tutoring transcript. Transcription can be imperfect, so only mark an item correct or incorrect when the learner's attempt and tutor feedback clearly support it. Otherwise use introduced. If a word was attempted repeatedly, use the most recent clear attempt. Extract only Finnish words or short phrases actually taught, attempted, or reviewed. For each word, feedback is a brief specific correction explicitly supported by the tutor's words, or an empty string. Mention pronunciation only if the tutor explicitly corrected pronunciation; do not infer accent from transcript spelling. Use stable lowercase ASCII keys for grammar topics. Write the summary, focus, lesson, and meanings in concise English. Plan three connected 4–6 minute upcoming lesson blocks using the learner's demonstrated skills and errors, starting with due review where useful. The first upcoming lesson must equal nextLesson; the other two are provisional logical continuations, not claims that they were completed. Keep each lesson title concise. The level may be A0, A1, A2, B1, B2, C1, or C2 with a short qualifier. Return structured JSON only.",
+            "You evaluate a Finnish tutoring transcript. Transcription can be imperfect, so only mark an item correct or incorrect when the learner's attempt and tutor feedback clearly support it. Otherwise use introduced. If a word was attempted repeatedly, use the most recent clear attempt. Extract only Finnish words or short phrases actually taught, attempted, or reviewed in the transcript; priorLearning is planning context, not evidence of a new attempt. For each word, feedback is a brief specific correction explicitly supported by the tutor's words, or an empty string. Mention pronunciation only if the tutor explicitly corrected pronunciation; do not infer accent from transcript spelling. Use stable lowercase ASCII keys for grammar topics. Write the summary, focus, lesson, and meanings in concise English. Plan three connected 4–6 minute upcoming lesson blocks using the transcript and priorLearning, starting with due review where useful. The first upcoming lesson must equal nextLesson; the other two are provisional logical continuations, not claims that they were completed. Keep each lesson title concise. The level may be A0, A1, A2, B1, B2, C1, or C2 with a short qualifier. Return structured JSON only.",
         },
-        { role: "user", content: JSON.stringify(transcript) },
+        {
+          role: "user",
+          content: JSON.stringify({
+            priorLearning: {
+              level: memory.level,
+              currentFocus: memory.currentFocus,
+              upcomingLessons: memory.upcomingLessons,
+              dueWords: memory.dueWords.map((word) => ({ finnish: word.finnish, english: word.english })),
+              weakestWords: memory.wordProgress.slice(0, 10).map((word) => ({
+                finnish: word.finnish,
+                mastery: word.mastery,
+                incorrectCount: word.incorrectCount,
+              })),
+            },
+            transcript,
+          }),
+        },
       ],
       text: {
         format: {
