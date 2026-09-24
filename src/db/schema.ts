@@ -19,6 +19,7 @@ export const vocabulary = pgTable(
     mastery: integer("mastery").notNull().default(0),
     correctCount: integer("correct_count").notNull().default(0),
     incorrectCount: integer("incorrect_count").notNull().default(0),
+    lastFeedback: text("last_feedback"),
     lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
     nextReviewAt: timestamp("next_review_at", { withTimezone: true }),
   },

@@ -11,12 +11,20 @@ export type DueWord = {
   mastery: number;
 };
 
+export type WordProgress = DueWord & {
+  correctCount: number;
+  incorrectCount: number;
+  lastFeedback: string | null;
+  nextReviewAt: string | null;
+};
+
 export type LearningSnapshot = {
   memoryReady: boolean;
   level: string;
   currentFocus: string;
   nextLesson: string;
   dueWords: DueWord[];
+  wordProgress: WordProgress[];
   knownWordCount: number;
   lastSummary: string | null;
 };

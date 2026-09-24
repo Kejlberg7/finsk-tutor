@@ -9,6 +9,7 @@ const EMPTY_LEARNING: LearningSnapshot = {
   currentFocus: "Korte hverdagssætninger og tydelig udtale",
   nextLesson: "Hilsner og at præsentere sig selv",
   dueWords: [],
+  wordProgress: [],
   knownWordCount: 0,
   lastSummary: null,
 };
@@ -240,6 +241,27 @@ export default function VoiceConsole() {
             <div className="word-list" aria-label="Ord til repetition">
               {learning.dueWords.map((word) => <span key={word.finnish}>{word.finnish}</span>)}
             </div>
+          ) : null}
+          {learning.wordProgress?.length ? (
+            <details className="word-progress">
+              <summary>Se fremskridt for hvert ord</summary>
+              <p className="word-progress-note">Procenten er et øveniveau ud fra tydelige forsøg i samtalerne, ikke en måling af din accent.</p>
+              <ul>
+                {learning.wordProgress.map((word) => (
+                  <li key={word.finnish}>
+                    <div className="word-progress-heading">
+                      <div><strong lang="fi">{word.finnish}</strong><span>{word.english}</span></div>
+                      <strong>{word.mastery * 20}%</strong>
+                    </div>
+                    <div className="progress-track" role="progressbar" aria-label={`Øveniveau for ${word.finnish}`} aria-valuenow={word.mastery * 20} aria-valuemin={0} aria-valuemax={100}>
+                      <span style={{ width: `${word.mastery * 20}%` }} />
+                    </div>
+                    <small>{word.correctCount} tydeligt rigtige · {word.incorrectCount} rettet</small>
+                    {word.lastFeedback ? <p className="word-feedback">Seneste rettelse: {word.lastFeedback}</p> : null}
+                  </li>
+                ))}
+              </ul>
+            </details>
           ) : null}
         </section>
 

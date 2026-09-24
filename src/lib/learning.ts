@@ -10,6 +10,7 @@ const DEFAULT_SNAPSHOT: LearningSnapshot = {
   currentFocus: "Korte hverdagssætninger og tydelig udtale",
   nextLesson: "Hilsner og at præsentere sig selv",
   dueWords: [],
+  wordProgress: [],
   knownWordCount: 0,
   lastSummary: null,
 };
@@ -27,6 +28,7 @@ type SessionReview = {
     danish: string;
     example: string;
     result: ReviewResult;
+    feedback: string;
   }>;
   grammar: Array<{
     key: string;
@@ -42,7 +44,7 @@ export async function getLearningSnapshot(): Promise<LearningSnapshot> {
     await ensureDatabaseSchema();
     const db = getDatabase();
     const now = new Date();
-    const [profiles, due, totals, recentSessions] = await Promise.all([
+    const [profiles, due, words, totals, recentSessions] = await Promise.all([
       db.select().from(learnerProfile).where(eq(learnerProfile.id, 1)).limit(1),
       db
         .select({ finnish: vocabulary.finnish, english: vocabulary.english, mastery: vocabulary.mastery })
@@ -50,6 +52,19 @@ export async function getLearningSnapshot(): Promise<LearningSnapshot> {
         .where(or(isNull(vocabulary.nextReviewAt), lte(vocabulary.nextReviewAt, now)))
         .orderBy(asc(vocabulary.nextReviewAt))
         .limit(8),
+      db
+        .select({
+          finnish: vocabulary.finnish,
+          english: vocabulary.english,
+          mastery: vocabulary.mastery,
+          correctCount: vocabulary.correctCount,
+          incorrectCount: vocabulary.incorrectCount,
+          lastFeedback: vocabulary.lastFeedback,
+          nextReviewAt: vocabulary.nextReviewAt,
+        })
+        .from(vocabulary)
+        .orderBy(asc(vocabulary.mastery), desc(vocabulary.incorrectCount), asc(vocabulary.nextReviewAt))
+        .limit(100),
       db.select({ value: count() }).from(vocabulary),
       db
         .select({ summary: practiceSessions.summary })
@@ -66,6 +81,10 @@ export async function getLearningSnapshot(): Promise<LearningSnapshot> {
       currentFocus: profile?.currentFocus ?? DEFAULT_SNAPSHOT.currentFocus,
       nextLesson: profile?.nextLesson ?? DEFAULT_SNAPSHOT.nextLesson,
       dueWords: due,
+      wordProgress: words.map((word) => ({
+        ...word,
+        nextReviewAt: word.nextReviewAt?.toISOString() ?? null,
+      })),
       knownWordCount: totals[0]?.value ?? 0,
       lastSummary: recentSessions[0]?.summary ?? null,
     };
@@ -111,8 +130,10 @@ TEACHING METHOD
 - Begin with a brief English greeting and state today's focus.
 - Teach one short Finnish phrase at a time, then pause for the learner to repeat it.
 - Review due words before adding new material.
+- Give more practice to words with low scores or repeated errors. Reuse high-score words only as occasional spaced review or sentence building.
 - Introduce at most three new Finnish words in each lesson block, not in the whole session.
 - Correct gently: acknowledge the attempt, say the corrected Finnish slowly, then give one short English explanation.
+- After an attempt, say briefly whether the word was right or what you corrected. Only comment on pronunciation when you can clearly hear a specific issue; otherwise ask for another attempt.
 - Recycle older words in new short sentences. Do not randomly change topic.
 - If speech recognition seems uncertain, ask the learner to repeat instead of confidently marking it wrong.
 - End naturally when the learner asks to stop; the application saves the transcript and updates the plan afterward.
@@ -213,7 +234,7 @@ async function analyseTranscript(transcript: TranscriptLine[]): Promise<SessionR
         {
           role: "system",
           content:
-            "You evaluate a Finnish tutoring transcript. Transcription can be imperfect, so only mark an item incorrect when the evidence is clear. Extract only Finnish words or short phrases actually taught, attempted, or reviewed. Use stable lowercase ASCII keys for grammar topics. Write the summary, focus, lesson, and meanings in concise English. The level may be A0, A1, A2, B1, B2, C1, or C2 with a short qualifier. Return structured JSON only.",
+            "You evaluate a Finnish tutoring transcript. Transcription can be imperfect, so only mark an item correct or incorrect when the learner's attempt and tutor feedback clearly support it. Otherwise use introduced. If a word was attempted repeatedly, use the most recent clear attempt. Extract only Finnish words or short phrases actually taught, attempted, or reviewed. For each word, feedback is a brief specific correction explicitly supported by the tutor's words, or an empty string. Mention pronunciation only if the tutor explicitly corrected pronunciation; do not infer accent from transcript spelling. Use stable lowercase ASCII keys for grammar topics. Write the summary, focus, lesson, and meanings in concise English. The level may be A0, A1, A2, B1, B2, C1, or C2 with a short qualifier. Return structured JSON only.",
         },
         { role: "user", content: JSON.stringify(transcript) },
       ],
@@ -239,8 +260,9 @@ async function analyseTranscript(transcript: TranscriptLine[]): Promise<SessionR
                     danish: { type: "string" },
                     example: { type: "string" },
                     result: { type: "string", enum: ["correct", "incorrect", "introduced"] },
+                    feedback: { type: "string" },
                   },
-                  required: ["finnish", "english", "danish", "example", "result"],
+                  required: ["finnish", "english", "danish", "example", "result", "feedback"],
                   additionalProperties: false,
                 },
               },
@@ -311,6 +333,9 @@ async function applyReview(review: SessionReview): Promise<void> {
       mastery: scores.mastery,
       correctCount: scores.correctCount,
       incorrectCount: scores.incorrectCount,
+      lastFeedback: word.result === "incorrect" && word.feedback.trim()
+        ? word.feedback.trim().slice(0, 240)
+        : current?.lastFeedback ?? null,
       lastSeenAt: now,
       nextReviewAt: nextReviewDate(scores.mastery, word.result, now),
     };
