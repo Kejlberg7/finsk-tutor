@@ -49,9 +49,11 @@ async function createSchema(): Promise<void> {
       level text NOT NULL DEFAULT 'Ny begynder',
       current_focus text NOT NULL DEFAULT 'Korte hverdagssætninger og tydelig udtale',
       next_lesson text NOT NULL DEFAULT 'Hilsner og at præsentere sig selv',
+      upcoming_lessons jsonb,
       updated_at timestamptz NOT NULL DEFAULT now()
     )
   `);
+  await sqlClient.unsafe(`ALTER TABLE learner_profile ADD COLUMN IF NOT EXISTS upcoming_lessons jsonb`);
   await sqlClient.unsafe(`
     CREATE TABLE IF NOT EXISTS vocabulary (
       id serial PRIMARY KEY,

@@ -9,6 +9,7 @@ const DEFAULT_SNAPSHOT: LearningSnapshot = {
   level: "Ny begynder",
   currentFocus: "Korte hverdagssætninger og tydelig udtale",
   nextLesson: "Hilsner og at præsentere sig selv",
+  upcomingLessons: ["Hilsner og at præsentere sig selv"],
   dueWords: [],
   wordProgress: [],
   knownWordCount: 0,
@@ -25,6 +26,7 @@ type SessionReview = {
   level: string;
   currentFocus: string;
   nextLesson: string;
+  upcomingLessons: string[];
   words: Array<{
     finnish: string;
     english: string;
@@ -82,12 +84,16 @@ export async function getLearningSnapshot(): Promise<LearningSnapshot> {
         .limit(1),
     ]);
     const profile = profiles[0];
+    const savedUpcomingLessons = Array.isArray(profile?.upcomingLessons)
+      ? profile.upcomingLessons.filter((lesson): lesson is string => typeof lesson === "string" && Boolean(lesson.trim())).slice(0, 3)
+      : [];
 
     return {
       memoryReady: true,
       level: profile?.level ?? DEFAULT_SNAPSHOT.level,
       currentFocus: profile?.currentFocus ?? DEFAULT_SNAPSHOT.currentFocus,
       nextLesson: profile?.nextLesson ?? DEFAULT_SNAPSHOT.nextLesson,
+      upcomingLessons: savedUpcomingLessons.length ? savedUpcomingLessons : [profile?.nextLesson ?? DEFAULT_SNAPSHOT.nextLesson],
       dueWords: due,
       wordProgress: words.map((word) => ({
         ...word,
@@ -127,6 +133,7 @@ export async function getTutorInstructions(): Promise<{ instructions: string; sn
   const familiar = familiarWords.length
     ? familiarWords.map((word) => `${word.finnish} (${word.english}, score ${word.mastery}/5)`).join(", ")
     : "none recorded yet";
+  const upcoming = snapshot.upcomingLessons.map((lesson, index) => `${index + 1}. ${lesson}`).join("; ");
 
   const instructions = `
 You are a patient Finnish conversation tutor for one Danish learner.
@@ -163,6 +170,7 @@ LEARNER MEMORY
 - Approximate level: ${snapshot.level}
 - Current focus: ${snapshot.currentFocus}
 - Planned next lesson: ${snapshot.nextLesson}
+- Provisional upcoming lesson blocks: ${upcoming}
 - Due for review: ${due}
 - Familiar vocabulary: ${familiar}
 - Last session: ${snapshot.lastSummary ?? "No completed session recorded yet."}
@@ -245,7 +253,7 @@ async function analyseTranscript(transcript: TranscriptLine[]): Promise<SessionR
         {
           role: "system",
           content:
-            "You evaluate a Finnish tutoring transcript. Transcription can be imperfect, so only mark an item correct or incorrect when the learner's attempt and tutor feedback clearly support it. Otherwise use introduced. If a word was attempted repeatedly, use the most recent clear attempt. Extract only Finnish words or short phrases actually taught, attempted, or reviewed. For each word, feedback is a brief specific correction explicitly supported by the tutor's words, or an empty string. Mention pronunciation only if the tutor explicitly corrected pronunciation; do not infer accent from transcript spelling. Use stable lowercase ASCII keys for grammar topics. Write the summary, focus, lesson, and meanings in concise English. The level may be A0, A1, A2, B1, B2, C1, or C2 with a short qualifier. Return structured JSON only.",
+            "You evaluate a Finnish tutoring transcript. Transcription can be imperfect, so only mark an item correct or incorrect when the learner's attempt and tutor feedback clearly support it. Otherwise use introduced. If a word was attempted repeatedly, use the most recent clear attempt. Extract only Finnish words or short phrases actually taught, attempted, or reviewed. For each word, feedback is a brief specific correction explicitly supported by the tutor's words, or an empty string. Mention pronunciation only if the tutor explicitly corrected pronunciation; do not infer accent from transcript spelling. Use stable lowercase ASCII keys for grammar topics. Write the summary, focus, lesson, and meanings in concise English. Plan three connected 4–6 minute upcoming lesson blocks using the learner's demonstrated skills and errors, starting with due review where useful. The first upcoming lesson must equal nextLesson; the other two are provisional logical continuations, not claims that they were completed. Keep each lesson title concise. The level may be A0, A1, A2, B1, B2, C1, or C2 with a short qualifier. Return structured JSON only.",
         },
         { role: "user", content: JSON.stringify(transcript) },
       ],
@@ -261,6 +269,7 @@ async function analyseTranscript(transcript: TranscriptLine[]): Promise<SessionR
               level: { type: "string" },
               currentFocus: { type: "string" },
               nextLesson: { type: "string" },
+              upcomingLessons: { type: "array", items: { type: "string" } },
               words: {
                 type: "array",
                 items: {
@@ -291,7 +300,7 @@ async function analyseTranscript(transcript: TranscriptLine[]): Promise<SessionR
                 },
               },
             },
-            required: ["summary", "level", "currentFocus", "nextLesson", "words", "grammar"],
+            required: ["summary", "level", "currentFocus", "nextLesson", "upcomingLessons", "words", "grammar"],
             additionalProperties: false,
           },
         },
@@ -310,6 +319,13 @@ async function analyseTranscript(transcript: TranscriptLine[]): Promise<SessionR
 async function applyReview(review: SessionReview): Promise<void> {
   const db = getDatabase();
   const now = new Date();
+  const upcomingLessons = (Array.isArray(review.upcomingLessons) ? review.upcomingLessons : [])
+    .filter((lesson): lesson is string => typeof lesson === "string")
+    .map((lesson) => lesson.trim())
+    .filter(Boolean)
+    .slice(0, 3);
+  const nextLesson = upcomingLessons[0] || review.nextLesson.trim() || DEFAULT_SNAPSHOT.nextLesson;
+  if (!upcomingLessons.length) upcomingLessons.push(nextLesson);
 
   await db
     .insert(learnerProfile)
@@ -317,7 +333,8 @@ async function applyReview(review: SessionReview): Promise<void> {
       id: 1,
       level: review.level,
       currentFocus: review.currentFocus,
-      nextLesson: review.nextLesson,
+      nextLesson,
+      upcomingLessons,
       updatedAt: now,
     })
     .onConflictDoUpdate({
@@ -325,7 +342,8 @@ async function applyReview(review: SessionReview): Promise<void> {
       set: {
         level: review.level,
         currentFocus: review.currentFocus,
-        nextLesson: review.nextLesson,
+        nextLesson,
+        upcomingLessons,
         updatedAt: now,
       },
     });

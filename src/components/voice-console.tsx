@@ -8,6 +8,7 @@ const EMPTY_LEARNING: LearningSnapshot = {
   level: "Ny begynder",
   currentFocus: "Korte hverdagssætninger og tydelig udtale",
   nextLesson: "Hilsner og at præsentere sig selv",
+  upcomingLessons: ["Hilsner og at præsentere sig selv"],
   dueWords: [],
   wordProgress: [],
   knownWordCount: 0,
@@ -233,7 +234,7 @@ export default function VoiceConsole() {
           <div className="hero-orbit hero-orbit-one" aria-hidden="true" />
           <div className="hero-orbit hero-orbit-two" aria-hidden="true" />
           <div className="hero-content">
-            <div className="hero-eyebrow"><span aria-hidden="true">✦</span> DIN PERSONLIGE FINSTIME</div>
+            <div className="hero-eyebrow"><span aria-hidden="true">✦</span> DIN PERSONLIGE FINSKLEKTION</div>
             <h1 id="welcome-title">Puhu rohkeasti.<span>Tal med mod.</span></h1>
             <p>En rolig samtale, der husker dine ord og tager dig videre i dit eget tempo. Du kan tale dansk; tutoren forklarer på engelsk.</p>
             <div className="hero-actions">
@@ -265,9 +266,18 @@ export default function VoiceConsole() {
             </section>
 
             <section className="lesson-card" aria-label="Din læringsplan">
-              <span className="card-kicker">DIN PLAN</span>
-              <div className="lesson-item"><span className="lesson-icon" aria-hidden="true">01</span><div><span className="label">Dagens fokus</span><p>{learning.currentFocus}</p></div></div>
-              <div className="lesson-item"><span className="lesson-icon" aria-hidden="true">02</span><div><span className="label">Næste skridt</span><p>{learning.nextLesson}</p></div></div>
+              <span className="card-kicker">DIN PLAN · KAN ÆNDRE SIG</span>
+              <h3>De næste øveblokke</h3>
+              <p className="lesson-focus"><strong>Fokus lige nu:</strong> {learning.currentFocus}</p>
+              <ol className="lesson-list">
+                {learning.upcomingLessons.map((lesson, index) => (
+                  <li className="lesson-item" key={`${index}-${lesson}`}>
+                    <span className="lesson-icon" aria-hidden="true">{String(index + 1).padStart(2, "0")}</span>
+                    <div><span className="label">{index === 0 ? "Næste blok" : "Derefter"}</span><p>{lesson}</p></div>
+                  </li>
+                ))}
+              </ol>
+              <p className="lesson-note">Planen bygger på dine gemte samtaler og opdateres, når du stopper og gemmer. Tutoren kan tilpasse rækkefølgen undervejs.{learning.upcomingLessons.length < 3 ? " Flere blokke vises efter din næste gemte samtale." : ""}</p>
             </section>
           </div>
 

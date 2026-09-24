@@ -5,6 +5,7 @@ export const learnerProfile = pgTable("learner_profile", {
   level: text("level").notNull().default("Ny begynder"),
   currentFocus: text("current_focus").notNull().default("Korte hverdagssætninger og tydelig udtale"),
   nextLesson: text("next_lesson").notNull().default("Hilsner og at præsentere sig selv"),
+  upcomingLessons: jsonb("upcoming_lessons").$type<string[]>(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 

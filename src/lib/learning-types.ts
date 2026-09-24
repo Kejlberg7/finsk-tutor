@@ -23,6 +23,7 @@ export type LearningSnapshot = {
   level: string;
   currentFocus: string;
   nextLesson: string;
+  upcomingLessons: string[];
   dueWords: DueWord[];
   wordProgress: WordProgress[];
   knownWordCount: number;

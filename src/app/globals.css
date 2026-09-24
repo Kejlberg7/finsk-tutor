@@ -93,10 +93,15 @@ button:disabled { cursor: not-allowed; opacity: 0.52; }
 .milestone-ring span { margin-top: 6px; color: #bfd8c2; font-size: 0.74rem; font-weight: 700; }
 
 .lesson-card { padding: 27px; background: #fbfcf7; }
+.lesson-card h3 { margin: 8px 0 0; font-size: 1.5rem; letter-spacing: -0.04em; }
+.lesson-focus { margin: 13px 0 0; color: var(--muted); font-size: 0.84rem; line-height: 1.45; }
+.lesson-focus strong { color: var(--ink); }
+.lesson-list { margin: 4px 0 0; padding: 0; list-style: none; }
 .lesson-item { display: flex; gap: 13px; padding-top: 22px; }
 .lesson-item + .lesson-item { margin-top: 18px; border-top: 1px solid var(--rule); }
 .lesson-icon { display: grid; place-items: center; flex: none; width: 36px; height: 36px; border-radius: 11px; background: #e7f0d9; color: #557746; font-size: 0.75rem; font-weight: 800; }
 .lesson-item p { margin: 4px 0 0; font-size: 1rem; font-weight: 660; line-height: 1.4; }
+.lesson-note { margin: 24px 0 0; padding-top: 16px; border-top: 1px solid var(--rule); color: var(--muted); font-size: 0.79rem; line-height: 1.5; }
 
 .stat-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
 .stat-card { display: flex; flex-direction: column; align-items: flex-start; min-height: 156px; padding: 21px; }
