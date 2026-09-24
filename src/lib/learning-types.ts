@@ -26,5 +26,8 @@ export type LearningSnapshot = {
   dueWords: DueWord[];
   wordProgress: WordProgress[];
   knownWordCount: number;
+  masteredWordCount: number;
+  dueWordCount: number;
+  completedSessionCount: number;
   lastSummary: string | null;
 };

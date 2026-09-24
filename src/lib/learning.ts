@@ -1,5 +1,5 @@
 import "server-only";
-import { and, asc, count, desc, eq, isNotNull, isNull, lte, or } from "drizzle-orm";
+import { and, asc, count, desc, eq, gte, isNotNull, isNull, lte, or } from "drizzle-orm";
 import { ensureDatabaseSchema, getDatabase, isDatabaseConfigured } from "@/db";
 import { grammarSkills, learnerProfile, practiceSessions, vocabulary } from "@/db/schema";
 import type { LearningSnapshot, TranscriptLine } from "@/lib/learning-types";
@@ -12,6 +12,9 @@ const DEFAULT_SNAPSHOT: LearningSnapshot = {
   dueWords: [],
   wordProgress: [],
   knownWordCount: 0,
+  masteredWordCount: 0,
+  dueWordCount: 0,
+  completedSessionCount: 0,
   lastSummary: null,
 };
 
@@ -44,7 +47,7 @@ export async function getLearningSnapshot(): Promise<LearningSnapshot> {
     await ensureDatabaseSchema();
     const db = getDatabase();
     const now = new Date();
-    const [profiles, due, words, totals, recentSessions] = await Promise.all([
+    const [profiles, due, words, totals, mastered, dueTotal, completed, recentSessions] = await Promise.all([
       db.select().from(learnerProfile).where(eq(learnerProfile.id, 1)).limit(1),
       db
         .select({ finnish: vocabulary.finnish, english: vocabulary.english, mastery: vocabulary.mastery })
@@ -66,6 +69,11 @@ export async function getLearningSnapshot(): Promise<LearningSnapshot> {
         .orderBy(asc(vocabulary.mastery), desc(vocabulary.incorrectCount), asc(vocabulary.nextReviewAt))
         .limit(100),
       db.select({ value: count() }).from(vocabulary),
+      db.select({ value: count() }).from(vocabulary).where(gte(vocabulary.mastery, 4)),
+      db.select({ value: count() }).from(vocabulary)
+        .where(or(isNull(vocabulary.nextReviewAt), lte(vocabulary.nextReviewAt, now))),
+      db.select({ value: count() }).from(practiceSessions)
+        .where(eq(practiceSessions.status, "completed")),
       db
         .select({ summary: practiceSessions.summary })
         .from(practiceSessions)
@@ -86,6 +94,9 @@ export async function getLearningSnapshot(): Promise<LearningSnapshot> {
         nextReviewAt: word.nextReviewAt?.toISOString() ?? null,
       })),
       knownWordCount: totals[0]?.value ?? 0,
+      masteredWordCount: mastered[0]?.value ?? 0,
+      dueWordCount: dueTotal[0]?.value ?? 0,
+      completedSessionCount: completed[0]?.value ?? 0,
       lastSummary: recentSessions[0]?.summary ?? null,
     };
   } catch (error) {

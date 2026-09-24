@@ -11,6 +11,9 @@ const EMPTY_LEARNING: LearningSnapshot = {
   dueWords: [],
   wordProgress: [],
   knownWordCount: 0,
+  masteredWordCount: 0,
+  dueWordCount: 0,
+  completedSessionCount: 0,
   lastSummary: null,
 };
 
@@ -37,6 +40,9 @@ export default function VoiceConsole() {
   const appSessionIdRef = useRef<number | null>(null);
   const finalisingRef = useRef(false);
   const closeTimerRef = useRef<number | null>(null);
+  const nextGoal = [5, 20, 50, 100, 200].find((goal) => learning.masteredWordCount < goal)
+    ?? Math.ceil((learning.masteredWordCount + 1) / 100) * 100;
+  const milestonePercent = Math.min(100, Math.round((learning.masteredWordCount / nextGoal) * 100));
 
   useEffect(() => {
     void fetch("/api/learning", { cache: "no-store", credentials: "same-origin" })
@@ -215,78 +221,101 @@ export default function VoiceConsole() {
 
   return (
     <main className="shell">
-      <section className="card">
-        <div className="eyebrow">Finsk Tutor · personlig læringsplan</div>
-        <h1>Tal finsk i små bidder.</h1>
-        <p className="intro">Du kan tale dansk. Tutoren forklarer på engelsk og træner korte finske sætninger ud fra det, du allerede har øvet.</p>
+      <div className="app-frame">
+        <header className="topbar">
+          <div className="brand"><span className="flag-mark" aria-hidden="true" /><div><strong>Finsk Tutor</strong><small>Din sprogrejse</small></div></div>
+          <span className={learning.memoryReady ? "memory ready" : "memory"}>
+            <span aria-hidden="true" />{learning.memoryReady ? "Hukommelse aktiv" : "Hukommelse mangler"}
+          </span>
+        </header>
 
-        <section className="learning" aria-label="Din læringsplan">
-          <div className="learning-heading">
-            <div>
-              <span className="label">Niveau</span>
-              <strong>{learning.level}</strong>
+        <section className="hero-card" aria-labelledby="welcome-title">
+          <div className="hero-orbit hero-orbit-one" aria-hidden="true" />
+          <div className="hero-orbit hero-orbit-two" aria-hidden="true" />
+          <div className="hero-content">
+            <div className="hero-eyebrow"><span aria-hidden="true">✦</span> DIN PERSONLIGE FINSTIME</div>
+            <h1 id="welcome-title">Puhu rohkeasti.<span>Tal med mod.</span></h1>
+            <p>En rolig samtale, der husker dine ord og tager dig videre i dit eget tempo. Du kan tale dansk; tutoren forklarer på engelsk.</p>
+            <div className="hero-actions">
+              <button className="primary" type="button" onClick={start} disabled={active || connecting}>
+                <span className="play-symbol" aria-hidden="true">▶</span>{connecting ? "Forbinder…" : "Start samtale"}
+              </button>
+              <button className="danger" type="button" onClick={stop} disabled={!active}>Stop og gem</button>
             </div>
-            <span className={learning.memoryReady ? "memory ready" : "memory"}>
-              {learning.memoryReady ? "Hukommelse aktiv" : "Hukommelse mangler"}
-            </span>
+            <div className="session-status" role="status"><span className={active ? "status-light active" : "status-light"} aria-hidden="true" />{status}</div>
           </div>
-          <div className="learning-grid">
-            <div><span className="label">Dagens fokus</span><p>{learning.currentFocus}</p></div>
-            <div><span className="label">Næste lektion</span><p>{learning.nextLesson}</p></div>
+        </section>
+
+        <div className="audio-row"><span>Lyd fra tutoren</span><audio ref={audioRef} autoPlay controls /></div>
+
+        <section className="dashboard" aria-labelledby="dashboard-title">
+          <div className="section-heading"><div><span className="section-kicker">DIT OVERBLIK</span><h2 id="dashboard-title">Sådan går det med din finsk</h2></div><span className="level-chip">{learning.level}</span></div>
+
+          <div className="dashboard-main">
+            <section className="milestone-card" aria-label="Din næste milepæl">
+              <div className="milestone-copy">
+                <span className="card-kicker">NÆSTE MILEPÆL</span>
+                <h3>{nextGoal} sikre ord</h3>
+                <p>Ord bliver “sikre”, når de har klaret flere øvesamtaler. De dukker stadig op til repetition, bare sjældnere.</p>
+                <div className="milestone-count"><strong>{learning.masteredWordCount}</strong><span>af {nextGoal} ord</span></div>
+              </div>
+              <div className="milestone-ring" role="progressbar" aria-label="Fremskridt mod næste ordmilepæl" aria-valuenow={learning.masteredWordCount} aria-valuemin={0} aria-valuemax={nextGoal} style={{ background: `conic-gradient(var(--lime) ${milestonePercent}%, #335e50 ${milestonePercent}% 100%)` }}>
+                <div><strong>{milestonePercent}%</strong><span>på vej</span></div>
+              </div>
+            </section>
+
+            <section className="lesson-card" aria-label="Din læringsplan">
+              <span className="card-kicker">DIN PLAN</span>
+              <div className="lesson-item"><span className="lesson-icon" aria-hidden="true">01</span><div><span className="label">Dagens fokus</span><p>{learning.currentFocus}</p></div></div>
+              <div className="lesson-item"><span className="lesson-icon" aria-hidden="true">02</span><div><span className="label">Næste skridt</span><p>{learning.nextLesson}</p></div></div>
+            </section>
           </div>
-          <div className="review-line">
-            <strong>{learning.dueWords.length}</strong> ord klar til repetition · {learning.knownWordCount} ord i alt
+
+          <div className="stat-grid" aria-label="Dine øvestatistikker">
+            <div className="stat-card"><span className="stat-icon green" aria-hidden="true">✧</span><strong>{learning.knownWordCount}</strong><span>Ord mødt</span></div>
+            <div className="stat-card"><span className="stat-icon lime" aria-hidden="true">✓</span><strong>{learning.masteredWordCount}</strong><span>Sikre ord</span></div>
+            <div className="stat-card"><span className="stat-icon peach" aria-hidden="true">↺</span><strong>{learning.dueWordCount}</strong><span>Klar til repetition</span></div>
+            <div className="stat-card"><span className="stat-icon blue" aria-hidden="true">◉</span><strong>{learning.completedSessionCount}</strong><span>Gemte samtaler</span></div>
           </div>
-          {learning.dueWords.length ? (
-            <div className="word-list" aria-label="Ord til repetition">
-              {learning.dueWords.map((word) => <span key={word.finnish}>{word.finnish}</span>)}
-            </div>
-          ) : null}
-          {learning.wordProgress?.length ? (
-            <details className="word-progress">
-              <summary>Se fremskridt for hvert ord</summary>
-              <p className="word-progress-note">Procenten er et øveniveau ud fra tydelige forsøg i samtalerne, ikke en måling af din accent.</p>
+
+          <div className="detail-grid">
+            <section className="review-card">
+              <div className="detail-heading"><div><span className="card-kicker">KOMMER IGEN</span><h3>Ord til repetition</h3></div><span className="detail-count">{learning.dueWordCount}</span></div>
+              {learning.dueWords.length ? (
+                <div className="review-words" aria-label="Ord til repetition">
+                  {learning.dueWords.map((word) => <span key={word.finnish} lang="fi">{word.finnish}</span>)}
+                </div>
+              ) : <p className="empty-copy">Ingen ord er klar til repetition lige nu. Godt arbejde!</p>}
+            </section>
+            <section className="recent-card">
+              <span className="card-kicker">SIDSTE SAMTALE</span>
+              <h3>Det tog du med dig</h3>
+              <p>{learning.lastSummary ?? "Efter din første gemte samtale får du en kort opsummering her."}</p>
+            </section>
+          </div>
+
+          <details className="word-progress">
+            <summary><span><span className="card-kicker">ORD FOR ORD</span><strong>Se dine fremskridt</strong><small>Øveniveau, forsøg og rettelser</small></span><span className="details-arrow" aria-hidden="true">↗</span></summary>
+            <p className="word-progress-note">Procenterne bygger på øvede ord og tydelige rettelser. De er ikke en måling af din accent eller et officielt sprogniveau.</p>
+            {learning.wordProgress?.length ? (
               <ul>
                 {learning.wordProgress.map((word) => (
                   <li key={word.finnish}>
-                    <div className="word-progress-heading">
-                      <div><strong lang="fi">{word.finnish}</strong><span>{word.english}</span></div>
-                      <strong>{word.mastery * 20}%</strong>
-                    </div>
-                    <div className="progress-track" role="progressbar" aria-label={`Øveniveau for ${word.finnish}`} aria-valuenow={word.mastery * 20} aria-valuemin={0} aria-valuemax={100}>
-                      <span style={{ width: `${word.mastery * 20}%` }} />
-                    </div>
+                    <div className="word-progress-heading"><div><strong lang="fi">{word.finnish}</strong><span>{word.english}</span></div><strong>{word.mastery * 20}%</strong></div>
+                    <div className="progress-track" role="progressbar" aria-label={`Øveniveau for ${word.finnish}`} aria-valuenow={word.mastery * 20} aria-valuemin={0} aria-valuemax={100}><span style={{ width: `${word.mastery * 20}%` }} /></div>
                     <small>{word.correctCount} tydeligt rigtige · {word.incorrectCount} rettet</small>
                     {word.lastFeedback ? <p className="word-feedback">Seneste rettelse: {word.lastFeedback}</p> : null}
                   </li>
                 ))}
               </ul>
-            </details>
+            ) : <p className="empty-copy">Ord og fremskridt vises her efter din første gemte øvesamtale.</p>}
+          </details>
+
+          {transcript.length > 0 ? (
+            <details className="transcript-wrap"><summary>Se transkript fra samtalen</summary><div className="transcript" aria-live="polite">{transcript.map((item, index) => <div className="bubble" key={`${item.speaker}-${item.startMs ?? index}-${index}`}><strong>{item.speaker}</strong>{item.text}</div>)}</div></details>
           ) : null}
         </section>
-
-        <div className="controls">
-          <button className="primary" type="button" onClick={start} disabled={active || connecting}>
-            {connecting ? "Forbinder…" : "Start samtale"}
-          </button>
-          <button className="danger" type="button" onClick={stop} disabled={!active}>Stop og gem</button>
-        </div>
-        <div className="status" role="status">{status}</div>
-        <audio ref={audioRef} autoPlay controls />
-        {transcript.length > 0 ? (
-          <details className="transcript-wrap">
-            <summary>Se transkript</summary>
-            <div className="transcript" aria-live="polite">
-              {transcript.map((item, index) => (
-                <div className="bubble" key={`${item.speaker}-${item.startMs ?? index}-${index}`}>
-                  <strong>{item.speaker}</strong>
-                  {item.text}
-                </div>
-              ))}
-            </div>
-          </details>
-        ) : null}
-      </section>
+      </div>
     </main>
   );
 }
