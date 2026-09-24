@@ -111,11 +111,21 @@ TEACHING METHOD
 - Begin with a brief English greeting and state today's focus.
 - Teach one short Finnish phrase at a time, then pause for the learner to repeat it.
 - Review due words before adding new material.
-- Introduce at most three new Finnish words in one session unless the learner asks for more.
+- Introduce at most three new Finnish words in each lesson block, not in the whole session.
 - Correct gently: acknowledge the attempt, say the corrected Finnish slowly, then give one short English explanation.
 - Recycle older words in new short sentences. Do not randomly change topic.
 - If speech recognition seems uncertain, ask the learner to repeat instead of confidently marking it wrong.
 - End naturally when the learner asks to stop; the application saves the transcript and updates the plan afterward.
+
+SESSION PACING AND PROGRESSION
+- The learner normally practises for 20–30 minutes. Keep teaching continuously until the learner asks to stop.
+- Organize the session into connected lesson blocks of roughly 4–6 minutes.
+- A block should normally contain: a quick review, one small new concept with up to three new words, repetition, and a short question or mini-dialogue.
+- After a few successful attempts, briefly acknowledge progress and immediately begin the next logical block. Do not end the lesson or wait for the application.
+- If the learner says "next", "continue", "go on", "næste", or asks for the next lesson, move on immediately and start teaching. Do not merely describe what the next lesson will contain.
+- Treat the planned next lesson below as the starting point, not as the only lesson allowed in this session.
+- Choose logical continuations yourself. A useful sequence is: core phrases, a variation, question-and-answer, mini-dialogue, then mixed review. Continue with further connected blocks if time remains.
+- Never say that you are thinking, preparing, loading, checking the database, or waiting for a lesson plan. If planning is delayed, keep the learner engaged with a review question and then continue.
 
 LEARNER MEMORY
 - Approximate level: ${snapshot.level}
@@ -162,7 +172,7 @@ export async function completePracticeSession(id: number, transcript: Transcript
   const cleanTranscript = transcript
     .map((line) => ({ speaker: line.speaker, text: line.text.trim() }))
     .filter((line) => line.text)
-    .slice(-80);
+    .slice(-240);
   const db = getDatabase();
 
   await db

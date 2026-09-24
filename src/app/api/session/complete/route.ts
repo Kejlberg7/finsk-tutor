@@ -20,7 +20,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Mangler samtaletranskript." }, { status: 400 });
   }
 
-  const transcript = body.transcript.filter(isTranscriptLine).slice(-80);
+  const transcript = body.transcript.filter(isTranscriptLine).slice(-240);
   if (!transcript.length) {
     return NextResponse.json({ error: "Samtalen havde intet transkript at gemme." }, { status: 400 });
   }

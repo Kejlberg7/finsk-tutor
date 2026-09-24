@@ -29,7 +29,23 @@ export async function POST(request: Request) {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      session: { model: "gpt-live-1", instructions },
+      session: {
+        model: "gpt-live-1",
+        instructions,
+        delegation: {
+          type: "responses",
+          responses: {
+            model: "gpt-6-luna",
+            reasoning: { effort: "low" },
+            max_output_tokens: 700,
+            instructions: `
+You are the fast, silent lesson-planning backend for a live Finnish tutor.
+When the learner wants to continue or the current exercise is complete, provide a concise plan for the next connected 4–6 minute lesson block. Include one target, up to three new words or phrases, a repetition drill, a mini-dialogue, and a natural transition to the following block.
+Respect the learner's level and recent conversation. Prefer steady progression over repeating an already completed exercise. Never tell the learner to wait and never return progress commentary; return the usable lesson plan immediately.
+`,
+          },
+        },
+      },
       transport: { type: "webrtc", sdp: body.sdp },
     }),
     cache: "no-store",

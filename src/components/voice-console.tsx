@@ -19,6 +19,7 @@ type LiveEvent = {
   start_ms?: number;
   end_ms?: number;
   error?: { message?: string };
+  event?: { type?: string };
 };
 
 export default function VoiceConsole() {
@@ -107,8 +108,16 @@ export default function VoiceConsole() {
           setStatus("Forbundet — tal bare.");
           sendEvent({
             type: "session.instructions.append",
+            event_id: "start_lesson",
+            delegation_id: null,
             content: "Open the lesson now with a very brief English greeting and today's focus, then give the first short Finnish phrase.",
           });
+        }
+        if (event.type === "session.delegation.created") {
+          setStatus("Planlægger næste øvelse — du kan stadig tale.");
+        }
+        if (event.type === "response.event" && ["response.completed", "response.failed", "response.incomplete"].includes(event.event?.type ?? "")) {
+          setStatus("Forbundet — tal bare.");
         }
         if (event.type === "session.closed") {
           closeConnection();
