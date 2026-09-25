@@ -50,4 +50,15 @@ export const practiceSessions = pgTable("practice_sessions", {
   transcript: jsonb("transcript"),
   summary: text("summary"),
   status: text("status").notNull().default("started"),
+  progressCursor: integer("progress_cursor").notNull().default(0),
 });
+
+export const ideaNotes = pgTable("idea_notes", {
+  id: serial("id").primaryKey(),
+  sessionId: integer("session_id"),
+  sourceKey: text("source_key").notNull(),
+  kind: text("kind").notNull(),
+  content: text("content").notNull(),
+  status: text("status").notNull().default("open"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [uniqueIndex("idea_notes_source_key_unique").on(table.sourceKey)]);

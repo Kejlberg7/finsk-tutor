@@ -3,6 +3,7 @@ import { and, asc, count, desc, eq, gte, isNotNull, isNull, lte, or } from "driz
 import { ensureDatabaseSchema, getDatabase, isDatabaseConfigured } from "@/db";
 import { grammarSkills, learnerProfile, practiceSessions, vocabulary } from "@/db/schema";
 import type { LearningSnapshot, TranscriptLine } from "@/lib/learning-types";
+import { compactTranscript, completedTurnCutoff } from "@/lib/transcript";
 
 const DEFAULT_SNAPSHOT: LearningSnapshot = {
   memoryReady: false,
@@ -154,6 +155,7 @@ TEACHING METHOD
 - After an attempt, say briefly whether the word was right or what you corrected. Only comment on pronunciation when you can clearly hear a specific issue; otherwise ask for another attempt.
 - Recycle older words in new short sentences. Do not randomly change topic.
 - If speech recognition seems uncertain, ask the learner to repeat instead of confidently marking it wrong.
+- If the learner wants to save feedback about this app, ask them to say "Notér idé: ..." or "Notér rettelse: ..." and wait for the app to confirm it was saved. Do not claim to have saved a note yourself.
 - End naturally when the learner asks to stop; the application saves the transcript and updates the plan afterward.
 
 SESSION PACING AND PROGRESSION
@@ -165,6 +167,7 @@ SESSION PACING AND PROGRESSION
 - Treat the planned next lesson below as the starting point, not as the only lesson allowed in this session.
 - Choose logical continuations yourself. A useful sequence is: core phrases, a variation, question-and-answer, mini-dialogue, then mixed review. Continue with further connected blocks if time remains.
 - Never say that you are thinking, preparing, loading, checking the database, or waiting for a lesson plan. If planning is delayed, keep the learner engaged with a review question and then continue.
+- The application may send a progress checkpoint while you speak. Use it to avoid repeating completed drills and to move to the next connected block when the learner is ready.
 
 LEARNER MEMORY
 - Approximate level: ${snapshot.level}
@@ -203,17 +206,68 @@ export async function attachLiveSessionId(id: number | null, liveSessionId: stri
   }
 }
 
-export async function completePracticeSession(id: number, transcript: TranscriptLine[]): Promise<LearningSnapshot> {
+export async function checkpointPracticeSession(id: number, fragments: TranscriptLine[]): Promise<{
+  learning: LearningSnapshot;
+  progressCursor: number;
+  correctWords: string[];
+  difficultWords: string[];
+  suggestedNextBlock: string | null;
+}> {
   if (!isDatabaseConfigured()) throw new Error("Læringshukommelsen mangler en databaseforbindelse.");
-  if (!transcript.some((line) => line.text.trim())) throw new Error("Samtalen indeholdt ikke noget transkript at gemme.");
+  await ensureDatabaseSchema();
+  const db = getDatabase();
+  const rows = await db.select({ status: practiceSessions.status, progressCursor: practiceSessions.progressCursor })
+    .from(practiceSessions).where(eq(practiceSessions.id, id)).limit(1);
+  const session = rows[0];
+  if (!session) throw new Error("Samtalen findes ikke.");
+  const noChange = async () => ({
+    learning: await getLearningSnapshot(),
+    progressCursor: session.progressCursor,
+    correctWords: [],
+    difficultWords: [],
+    suggestedNextBlock: null,
+  });
+  if (session.status !== "started" || fragments.length <= session.progressCursor) return noChange();
+
+  const fullTranscript = compactTranscript(fragments);
+  const processUntil = completedTurnCutoff(fragments);
+  const freshTranscript = compactTranscript(fragments.slice(session.progressCursor, processUntil));
+  await db.update(practiceSessions).set({ transcript: fullTranscript })
+    .where(and(eq(practiceSessions.id, id), eq(practiceSessions.status, "started")));
+  if (!freshTranscript.length) return noChange();
+
+  const review = await analyseTranscript(fullTranscript.slice(-40), await getLearningSnapshot(), freshTranscript);
+  let applied = false;
+  await db.transaction(async (tx) => {
+    const locked = await tx.select({ progressCursor: practiceSessions.progressCursor, status: practiceSessions.status })
+      .from(practiceSessions).where(eq(practiceSessions.id, id)).for("update").limit(1);
+    if (locked[0]?.status !== "started" || locked[0]?.progressCursor !== session.progressCursor) return;
+    await applyReview(review, false, tx);
+    await tx.update(practiceSessions).set({ progressCursor: processUntil }).where(eq(practiceSessions.id, id));
+    applied = true;
+  });
+  return {
+    learning: await getLearningSnapshot(),
+    progressCursor: applied ? processUntil : session.progressCursor,
+    correctWords: applied ? review.words.filter((word) => word.result === "correct").map((word) => word.finnish).slice(0, 8) : [],
+    difficultWords: applied ? review.words.filter((word) => word.result === "incorrect").map((word) => word.finnish).slice(0, 8) : [],
+    suggestedNextBlock: applied ? review.nextLesson : null,
+  };
+}
+
+export async function completePracticeSession(id: number, fragments: TranscriptLine[]): Promise<LearningSnapshot> {
+  if (!isDatabaseConfigured()) throw new Error("Læringshukommelsen mangler en databaseforbindelse.");
+  if (!fragments.some((line) => line.text.trim())) throw new Error("Samtalen indeholdt ikke noget transkript at gemme.");
 
   await ensureDatabaseSchema();
-
-  const cleanTranscript = transcript
-    .map((line) => ({ speaker: line.speaker, text: line.text.trim() }))
-    .filter((line) => line.text)
-    .slice(-240);
   const db = getDatabase();
+  const rows = await db.select({ status: practiceSessions.status, progressCursor: practiceSessions.progressCursor })
+    .from(practiceSessions).where(eq(practiceSessions.id, id)).limit(1);
+  const session = rows[0];
+  if (!session) throw new Error("Samtalen findes ikke.");
+  if (session.status === "completed") return getLearningSnapshot();
+  const cleanTranscript = compactTranscript(fragments);
+  const freshTranscript = compactTranscript(fragments.slice(session.progressCursor));
 
   await db
     .update(practiceSessions)
@@ -221,12 +275,13 @@ export async function completePracticeSession(id: number, transcript: Transcript
     .where(eq(practiceSessions.id, id));
 
   try {
-    const review = await analyseTranscript(cleanTranscript, await getLearningSnapshot());
-    await applyReview(review);
-    await db
-      .update(practiceSessions)
-      .set({ summary: review.summary, endedAt: new Date(), status: "completed" })
-      .where(eq(practiceSessions.id, id));
+    const review = await analyseTranscript(cleanTranscript, await getLearningSnapshot(), freshTranscript);
+    await db.transaction(async (tx) => {
+      await applyReview(review, true, tx);
+      await tx.update(practiceSessions)
+        .set({ summary: review.summary, endedAt: new Date(), status: "completed", progressCursor: fragments.length })
+        .where(eq(practiceSessions.id, id));
+    });
     return getLearningSnapshot();
   } catch (error) {
     await db
@@ -237,7 +292,7 @@ export async function completePracticeSession(id: number, transcript: Transcript
   }
 }
 
-async function analyseTranscript(transcript: TranscriptLine[], memory: LearningSnapshot): Promise<SessionReview> {
+async function analyseTranscript(transcript: TranscriptLine[], memory: LearningSnapshot, scoringTranscript = transcript): Promise<SessionReview> {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) throw new Error("OPENAI_API_KEY mangler på serveren.");
 
@@ -253,7 +308,7 @@ async function analyseTranscript(transcript: TranscriptLine[], memory: LearningS
         {
           role: "system",
           content:
-            "You evaluate a Finnish tutoring transcript. Transcription can be imperfect, so only mark an item correct or incorrect when the learner's attempt and tutor feedback clearly support it. Otherwise use introduced. If a word was attempted repeatedly, use the most recent clear attempt. Extract only Finnish words or short phrases actually taught, attempted, or reviewed in the transcript; priorLearning is planning context, not evidence of a new attempt. For each word, feedback is a brief specific correction explicitly supported by the tutor's words, or an empty string. Mention pronunciation only if the tutor explicitly corrected pronunciation; do not infer accent from transcript spelling. Use stable lowercase ASCII keys for grammar topics. Write the summary, focus, lesson, and meanings in concise English. Plan three connected 4–6 minute upcoming lesson blocks using the transcript and priorLearning, starting with due review where useful. The first upcoming lesson must equal nextLesson; the other two are provisional logical continuations, not claims that they were completed. Keep each lesson title concise. The level may be A0, A1, A2, B1, B2, C1, or C2 with a short qualifier. Return structured JSON only.",
+            "You evaluate a Finnish tutoring transcript. Transcription can be imperfect, so only mark an item correct or incorrect when the learner's attempt and tutor feedback clearly support it. Otherwise use introduced. If a word was attempted repeatedly, use the most recent clear attempt. Extract words and grammar results only from scoringTranscript; transcript and priorLearning provide context for summary and planning, not evidence of a new scored attempt. Ignore app-feedback notes as lesson material. If scoringTranscript is empty, return empty words and grammar arrays. For each word, feedback is a brief specific correction explicitly supported by the tutor's words, or an empty string. Mention pronunciation only if the tutor explicitly corrected pronunciation; do not infer accent from transcript spelling. Use stable lowercase ASCII keys for grammar topics. Write the summary, focus, lesson, and meanings in concise English. Plan three connected 4–6 minute upcoming lesson blocks using transcript and priorLearning; avoid repeating a completed drill and start with due review where useful. The first upcoming lesson must equal nextLesson; the other two are provisional logical continuations, not claims that they were completed. Keep each lesson title concise. The level may be A0, A1, A2, B1, B2, C1, or C2 with a short qualifier. Return structured JSON only.",
         },
         {
           role: "user",
@@ -270,6 +325,7 @@ async function analyseTranscript(transcript: TranscriptLine[], memory: LearningS
               })),
             },
             transcript,
+            scoringTranscript,
           }),
         },
       ],
@@ -332,8 +388,11 @@ async function analyseTranscript(transcript: TranscriptLine[], memory: LearningS
   return JSON.parse(output) as SessionReview;
 }
 
-async function applyReview(review: SessionReview): Promise<void> {
-  const db = getDatabase();
+async function applyReview(
+  review: SessionReview,
+  updateProfile: boolean,
+  db: Parameters<Parameters<ReturnType<typeof getDatabase>["transaction"]>[0]>[0],
+): Promise<void> {
   const now = new Date();
   const upcomingLessons = (Array.isArray(review.upcomingLessons) ? review.upcomingLessons : [])
     .filter((lesson): lesson is string => typeof lesson === "string")
@@ -343,7 +402,7 @@ async function applyReview(review: SessionReview): Promise<void> {
   const nextLesson = upcomingLessons[0] || review.nextLesson.trim() || DEFAULT_SNAPSHOT.nextLesson;
   if (!upcomingLessons.length) upcomingLessons.push(nextLesson);
 
-  await db
+  if (updateProfile) await db
     .insert(learnerProfile)
     .values({
       id: 1,

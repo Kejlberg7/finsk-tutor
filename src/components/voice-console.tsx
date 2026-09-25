@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { LearningSnapshot, TranscriptLine } from "@/lib/learning-types";
+import { extractIdeaCue } from "@/lib/idea-cue";
+import type { IdeaNote, LearningSnapshot, RecentSession, TranscriptLine } from "@/lib/learning-types";
 
 const EMPTY_LEARNING: LearningSnapshot = {
   memoryReady: false,
@@ -31,19 +32,51 @@ export default function VoiceConsole() {
   const [status, setStatus] = useState("Klar til en samtale.");
   const [transcript, setTranscript] = useState<TranscriptLine[]>([]);
   const [learning, setLearning] = useState<LearningSnapshot>(EMPTY_LEARNING);
+  const [history, setHistory] = useState<RecentSession[]>([]);
+  const [ideas, setIdeas] = useState<IdeaNote[]>([]);
+  const [historyError, setHistoryError] = useState("");
+  const [ideasError, setIdeasError] = useState("");
+  const [progressMessage, setProgressMessage] = useState("Ordstatus opdateres under samtalen.");
+  const [ideaMessage, setIdeaMessage] = useState("");
   const [active, setActive] = useState(false);
   const [connecting, setConnecting] = useState(false);
+  const [saving, setSaving] = useState(false);
   const peerRef = useRef<RTCPeerConnection | null>(null);
   const channelRef = useRef<RTCDataChannel | null>(null);
   const microphoneRef = useRef<MediaStream | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const transcriptRef = useRef<TranscriptLine[]>([]);
+  const rawTranscriptRef = useRef<TranscriptLine[]>([]);
+  const pendingUserRef = useRef("");
+  const ideaTimerRef = useRef<number | null>(null);
+  const ideaTasksRef = useRef<Set<Promise<void>>>(new Set());
+  const checkpointTimerRef = useRef<number | null>(null);
+  const checkpointPromiseRef = useRef<Promise<void> | null>(null);
+  const progressCursorRef = useRef(0);
   const appSessionIdRef = useRef<number | null>(null);
   const finalisingRef = useRef(false);
   const closeTimerRef = useRef<number | null>(null);
   const nextGoal = [5, 20, 50, 100, 200].find((goal) => learning.masteredWordCount < goal)
     ?? Math.ceil((learning.masteredWordCount + 1) / 100) * 100;
   const milestonePercent = Math.min(100, Math.round((learning.masteredWordCount / nextGoal) * 100));
+
+  async function refreshHistory() {
+    try {
+      const response = await fetch("/api/history", { cache: "no-store", credentials: "same-origin" });
+      if (!response.ok) throw new Error("Kunne ikke hente samtaler.");
+      if (response.ok) setHistory(await response.json() as RecentSession[]);
+      setHistoryError("");
+    } catch { setHistoryError("Kunne ikke hente samtaler lige nu."); }
+  }
+
+  async function refreshIdeas() {
+    try {
+      const response = await fetch("/api/ideas", { cache: "no-store", credentials: "same-origin" });
+      if (!response.ok) throw new Error("Kunne ikke hente idéer.");
+      if (response.ok) setIdeas(await response.json() as IdeaNote[]);
+      setIdeasError("");
+    } catch { setIdeasError("Kunne ikke hente idéer lige nu."); }
+  }
 
   useEffect(() => {
     void fetch("/api/learning", { cache: "no-store", credentials: "same-origin" })
@@ -53,8 +86,18 @@ export default function VoiceConsole() {
       })
       .then(setLearning)
       .catch(() => undefined);
+    void fetch("/api/history", { cache: "no-store", credentials: "same-origin" })
+      .then((response) => { if (!response.ok) throw new Error(); return response.json() as Promise<RecentSession[]>; })
+      .then((items) => { setHistory(items); setHistoryError(""); })
+      .catch(() => setHistoryError("Kunne ikke hente samtaler lige nu."));
+    void fetch("/api/ideas", { cache: "no-store", credentials: "same-origin" })
+      .then((response) => { if (!response.ok) throw new Error(); return response.json() as Promise<IdeaNote[]>; })
+      .then((items) => { setIdeas(items); setIdeasError(""); })
+      .catch(() => setIdeasError("Kunne ikke hente idéer lige nu."));
     return () => {
       if (closeTimerRef.current) window.clearTimeout(closeTimerRef.current);
+      if (ideaTimerRef.current) window.clearTimeout(ideaTimerRef.current);
+      if (checkpointTimerRef.current) window.clearInterval(checkpointTimerRef.current);
       microphoneRef.current?.getTracks().forEach((track) => track.stop());
       peerRef.current?.close();
     };
@@ -62,6 +105,7 @@ export default function VoiceConsole() {
 
   function updateTranscript(speaker: TranscriptLine["speaker"], event: LiveEvent) {
     if (!event.delta) return;
+    rawTranscriptRef.current.push({ speaker, text: event.delta, startMs: event.start_ms, endMs: event.end_ms });
     const next = appendTranscript(transcriptRef.current, {
       speaker,
       text: event.delta,
@@ -70,11 +114,129 @@ export default function VoiceConsole() {
     });
     transcriptRef.current = next;
     setTranscript(next);
+    if (speaker === "dig") {
+      pendingUserRef.current += event.delta;
+      if (ideaTimerRef.current) window.clearTimeout(ideaTimerRef.current);
+      ideaTimerRef.current = window.setTimeout(() => { void flushIdea(); }, 5_000);
+    } else if (pendingUserRef.current) {
+      if (ideaTimerRef.current) window.clearTimeout(ideaTimerRef.current);
+      ideaTimerRef.current = window.setTimeout(() => { void flushIdea(); }, 1_500);
+    }
+  }
+
+  function flushIdea() {
+    if (ideaTimerRef.current) window.clearTimeout(ideaTimerRef.current);
+    ideaTimerRef.current = null;
+    const utterance = pendingUserRef.current.trim();
+    pendingUserRef.current = "";
+    if (!extractIdeaCue(utterance)) return;
+    const sessionId = appSessionIdRef.current;
+    if (!sessionId) {
+      setIdeaMessage("Idéen kunne ikke gemmes, fordi samtalen ikke er forbundet endnu.");
+      return;
+    }
+    const task = persistIdea(utterance, sessionId);
+    ideaTasksRef.current.add(task);
+    void task.finally(() => { ideaTasksRef.current.delete(task); });
+  }
+
+  async function persistIdea(utterance: string, sessionId: number) {
+    try {
+      const response = await fetch("/api/ideas", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        signal: AbortSignal.timeout(15_000),
+        body: JSON.stringify({ sessionId, sourceKey: crypto.randomUUID(), utterance }),
+      });
+      const payload: unknown = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(apiErrorMessage(payload));
+      const note = payload as IdeaNote;
+      setIdeas((current) => [note, ...current.filter((item) => item.id !== note.id)]);
+      setIdeasError("");
+      setIdeaMessage("Idé gemt til senere.");
+      if (appSessionIdRef.current === sessionId) sendEvent({
+        type: "session.commentary.append",
+        event_id: `idea_saved_${note.id}`,
+        delegation_id: null,
+        content: "Your app-feedback note was saved for later. Briefly acknowledge that it is saved, then continue the Finnish lesson.",
+      });
+    } catch (error) {
+      setIdeaMessage(error instanceof Error ? `Idéen blev ikke gemt: ${error.message}` : "Idéen blev ikke gemt.");
+      if (appSessionIdRef.current === sessionId) sendEvent({
+        type: "session.commentary.append",
+        event_id: `idea_failed_${crypto.randomUUID()}`,
+        delegation_id: null,
+        content: "The app could not save that note. Tell the learner briefly that it was not saved, then continue the lesson.",
+      });
+    }
+  }
+
+  async function toggleIdea(note: IdeaNote) {
+    try {
+      const response = await fetch("/api/ideas", {
+        method: "PATCH",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: note.id, status: note.status === "open" ? "done" : "open" }),
+      });
+      const payload: unknown = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(apiErrorMessage(payload));
+      const changed = payload as IdeaNote;
+      setIdeas((current) => current.map((item) => item.id === changed.id ? changed : item));
+    } catch (error) {
+      setIdeaMessage(error instanceof Error ? error.message : "Kunne ikke opdatere noten.");
+    }
+  }
+
+  async function checkpoint() {
+    const sessionId = appSessionIdRef.current;
+    if (!sessionId || checkpointPromiseRef.current || rawTranscriptRef.current.length <= progressCursorRef.current) return;
+    const fragments = [...rawTranscriptRef.current];
+    const task = (async () => {
+      try {
+        setProgressMessage("Gemmer ordstatus…");
+        const response = await fetch("/api/session/progress", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sessionId, fragments }),
+        });
+        const payload: unknown = await response.json().catch(() => null);
+        if (!response.ok) throw new Error(apiErrorMessage(payload));
+        const result = payload as {
+          learning: LearningSnapshot; progressCursor: number; correctWords: string[];
+          difficultWords: string[]; suggestedNextBlock: string | null;
+        };
+        const advanced = result.progressCursor > progressCursorRef.current;
+        progressCursorRef.current = result.progressCursor;
+        setLearning(result.learning);
+        setProgressMessage(advanced
+          ? `Ordstatus gemt kl. ${new Intl.DateTimeFormat("da-DK", { hour: "2-digit", minute: "2-digit" }).format(new Date())}.`
+          : "Venter på en afsluttet øvelse før næste opdatering.");
+        if (result.suggestedNextBlock) {
+          sendEvent({
+            type: "session.instructions.append",
+            event_id: `progress_${result.progressCursor}`,
+            delegation_id: null,
+            content: `Live learning checkpoint. Clearly successful words: ${result.correctWords.join(", ") || "none yet"}. Words needing another attempt: ${result.difficultWords.join(", ") || "none noted"}. Suggested connected next block: ${result.suggestedNextBlock.slice(0, 180)}. Avoid repeating a finished drill; after a few attempts, transition into the next block without waiting for the learner to ask.`,
+          });
+        }
+        void refreshHistory();
+      } catch (error) {
+        setProgressMessage(error instanceof Error ? `Ordstatus kunne ikke gemmes endnu: ${error.message}` : "Ordstatus kunne ikke gemmes endnu.");
+      }
+    })();
+    checkpointPromiseRef.current = task;
+    await task;
+    if (checkpointPromiseRef.current === task) checkpointPromiseRef.current = null;
   }
 
   function closeConnection() {
     if (closeTimerRef.current) window.clearTimeout(closeTimerRef.current);
     closeTimerRef.current = null;
+    if (checkpointTimerRef.current) window.clearInterval(checkpointTimerRef.current);
+    checkpointTimerRef.current = null;
     microphoneRef.current?.getTracks().forEach((track) => track.stop());
     channelRef.current?.close();
     peerRef.current?.close();
@@ -91,8 +253,14 @@ export default function VoiceConsole() {
     setConnecting(true);
     setTranscript([]);
     transcriptRef.current = [];
+    rawTranscriptRef.current = [];
+    pendingUserRef.current = "";
+    progressCursorRef.current = 0;
+    setIdeaMessage("");
+    setProgressMessage("Ordstatus opdateres cirka hvert 3. minut efter afsluttede øvelser.");
     appSessionIdRef.current = null;
     finalisingRef.current = false;
+    setSaving(false);
 
     try {
       const peer = new RTCPeerConnection();
@@ -128,6 +296,7 @@ export default function VoiceConsole() {
           setStatus("Forbundet — tal bare.");
         }
         if (event.type === "session.closed") {
+          void flushIdea();
           closeConnection();
           void saveSession();
         }
@@ -163,6 +332,7 @@ export default function VoiceConsole() {
       await peer.setRemoteDescription({ type: "answer", sdp: result.transport.sdp });
       setActive(true);
       setConnecting(false);
+      checkpointTimerRef.current = window.setInterval(() => { void checkpoint(); }, 150_000);
     } catch (error) {
       closeConnection();
       setStatus(error instanceof Error ? error.message : "Kunne ikke starte samtalen.");
@@ -171,6 +341,7 @@ export default function VoiceConsole() {
 
   function stop() {
     setStatus("Afslutter og gemmer samtalen…");
+    void flushIdea();
     if (channelRef.current?.readyState === "open") {
       sendEvent({ type: "session.close" });
       closeTimerRef.current = window.setTimeout(() => {
@@ -190,15 +361,20 @@ export default function VoiceConsole() {
   async function saveSession() {
     if (finalisingRef.current) return;
     finalisingRef.current = true;
+    setSaving(true);
     const sessionId = appSessionIdRef.current;
-    const finalTranscript = transcriptRef.current;
+    if (checkpointPromiseRef.current) await checkpointPromiseRef.current;
+    await Promise.all([...ideaTasksRef.current]);
+    const finalTranscript = rawTranscriptRef.current;
 
     if (!sessionId) {
       setStatus("Samtalen er afsluttet. Hukommelsen er ikke sat op endnu.");
+      setSaving(false);
       return;
     }
     if (!finalTranscript.some((line) => line.text.trim())) {
       setStatus("Samtalen er afsluttet, men der var intet transkript at gemme.");
+      setSaving(false);
       return;
     }
 
@@ -214,9 +390,13 @@ export default function VoiceConsole() {
       if (!response.ok) throw new Error(apiErrorMessage(payload));
       const nextLearning = (payload as { learning?: LearningSnapshot } | null)?.learning;
       if (nextLearning) setLearning(nextLearning);
+      void refreshHistory();
+      void refreshIdeas();
       setStatus("Gemt — næste samtale fortsætter ud fra det, du øvede.");
     } catch (error) {
       setStatus(error instanceof Error ? `Samtalen sluttede, men blev ikke gemt: ${error.message}` : "Samtalen sluttede, men blev ikke gemt.");
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -238,12 +418,13 @@ export default function VoiceConsole() {
             <h1 id="welcome-title">Puhu rohkeasti.<span>Tal med mod.</span></h1>
             <p>En rolig samtale, der husker dine ord og tager dig videre i dit eget tempo. Du kan tale dansk; tutoren forklarer på engelsk.</p>
             <div className="hero-actions">
-              <button className="primary" type="button" onClick={start} disabled={active || connecting}>
+              <button className="primary" type="button" onClick={start} disabled={active || connecting || saving}>
                 <span className="play-symbol" aria-hidden="true">▶</span>{connecting ? "Forbinder…" : "Start samtale"}
               </button>
               <button className="danger" type="button" onClick={stop} disabled={!active}>Stop og gem</button>
             </div>
             <div className="session-status" role="status"><span className={active ? "status-light active" : "status-light"} aria-hidden="true" />{status}</div>
+            <div className="live-progress" role="status">{progressMessage}</div>
           </div>
         </section>
 
@@ -321,6 +502,44 @@ export default function VoiceConsole() {
             ) : <p className="empty-copy">Ord og fremskridt vises her efter din første gemte øvesamtale.</p>}
           </details>
 
+          <div className="archive-grid">
+            <section className="archive-card" aria-labelledby="history-title">
+              <span className="card-kicker">DIN HISTORIK</span>
+              <h3 id="history-title">Seneste samtaler</h3>
+              {historyError ? <p className="empty-copy">{historyError}</p> : history.length ? (
+                <div className="archive-list">
+                  {history.map((session) => (
+                    <details className="archive-item" key={session.id}>
+                      <summary><span><strong>{formatDate(session.startedAt)}</strong><small>{session.status === "completed" ? "Gemt samtale" : "Delvist gemt"}</small></span><span className="archive-arrow" aria-hidden="true">⌄</span></summary>
+                      <p>{session.summary ?? "Ingen opsummering endnu. Du kan stadig læse samtalen herunder."}</p>
+                      <div className="archive-transcript">
+                        {session.transcript.map((line, index) => <div className="archive-line" key={`${session.id}-${index}`}><strong>{line.speaker === "dig" ? "Dig" : "Tutor"}</strong><span>{line.text}</span></div>)}
+                      </div>
+                    </details>
+                  ))}
+                </div>
+              ) : <p className="empty-copy">Dine gemte samtaler vises her, når du har afsluttet en øvetur.</p>}
+            </section>
+
+            <section className="archive-card" aria-labelledby="ideas-title">
+              <span className="card-kicker">TIL SENERE</span>
+              <h3 id="ideas-title">Idéer og rettelser</h3>
+              <p className="archive-help">Mens du taler, kan du sige <strong>“Notér idé: …”</strong> eller <strong>“Notér rettelse: …”</strong>. Appen gemmer noten med det samme.</p>
+              {ideaMessage ? <p className="idea-message" role="status">{ideaMessage}</p> : null}
+              {ideasError ? <p className="empty-copy">{ideasError}</p> : ideas.length ? (
+                <ul className="idea-list">
+                  {ideas.map((note) => (
+                    <li className={note.status === "done" ? "idea-item done" : "idea-item"} key={note.id}>
+                      <div className="idea-meta"><span>{note.kind === "correction" ? "Rettelse" : "Idé"}</span><time dateTime={note.createdAt}>{formatDate(note.createdAt)}</time></div>
+                      <p>{note.content}</p>
+                      <button type="button" onClick={() => { void toggleIdea(note); }}>{note.status === "done" ? "Genåbn" : "Markér som klaret"}</button>
+                    </li>
+                  ))}
+                </ul>
+              ) : <p className="empty-copy">Ingen idéer gemt endnu. Du kan diktere den første under næste samtale.</p>}
+            </section>
+          </div>
+
           {transcript.length > 0 ? (
             <details className="transcript-wrap"><summary>Se transkript fra samtalen</summary><div className="transcript" aria-live="polite">{transcript.map((item, index) => <div className="bubble" key={`${item.speaker}-${item.startMs ?? index}-${index}`}><strong>{item.speaker}</strong>{item.text}</div>)}</div></details>
           ) : null}
@@ -339,6 +558,10 @@ function apiErrorMessage(payload: unknown): string {
     if (typeof message === "string") return message;
   }
   return "Kunne ikke gennemføre handlingen.";
+}
+
+function formatDate(value: string): string {
+  return new Intl.DateTimeFormat("da-DK", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }).format(new Date(value));
 }
 
 function safeLiveEvent(value: unknown): LiveEvent | null {

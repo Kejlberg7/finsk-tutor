@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
 import { getSessionFromRequest } from "@/lib/auth";
 import { completePracticeSession } from "@/lib/learning";
-import type { TranscriptLine } from "@/lib/learning-types";
+import { cleanFragments } from "@/lib/transcript";
+
+export const maxDuration = 60;
 
 export async function POST(request: Request) {
   if (!(await getSessionFromRequest(request))) {
@@ -16,11 +18,12 @@ export async function POST(request: Request) {
   if (!Number.isInteger(body?.sessionId) || typeof body?.sessionId !== "number") {
     return NextResponse.json({ error: "Mangler et gyldigt sessionsnummer." }, { status: 400 });
   }
-  if (!Array.isArray(body.transcript)) {
-    return NextResponse.json({ error: "Mangler samtaletranskript." }, { status: 400 });
+  let transcript;
+  try {
+    transcript = cleanFragments(body.transcript);
+  } catch {
+    return NextResponse.json({ error: "Ugyldigt samtaletranskript." }, { status: 400 });
   }
-
-  const transcript = body.transcript.filter(isTranscriptLine).slice(-240);
   if (!transcript.length) {
     return NextResponse.json({ error: "Samtalen havde intet transkript at gemme." }, { status: 400 });
   }
@@ -35,10 +38,4 @@ export async function POST(request: Request) {
       { status: 500, headers: { "Cache-Control": "no-store" } },
     );
   }
-}
-
-function isTranscriptLine(value: unknown): value is TranscriptLine {
-  if (!value || typeof value !== "object") return false;
-  const item = value as { speaker?: unknown; text?: unknown };
-  return (item.speaker === "dig" || item.speaker === "tutor") && typeof item.text === "string";
 }

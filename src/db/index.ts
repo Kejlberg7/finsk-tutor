@@ -94,10 +94,24 @@ async function createSchema(): Promise<void> {
       ended_at timestamptz,
       transcript jsonb,
       summary text,
-      status text NOT NULL DEFAULT 'started'
+      status text NOT NULL DEFAULT 'started',
+      progress_cursor integer NOT NULL DEFAULT 0
     )
   `);
   await sqlClient.unsafe(`ALTER TABLE practice_sessions ADD COLUMN IF NOT EXISTS live_session_id text`);
   await sqlClient.unsafe(`ALTER TABLE practice_sessions ADD COLUMN IF NOT EXISTS transcript jsonb`);
   await sqlClient.unsafe(`ALTER TABLE practice_sessions ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'started'`);
+  await sqlClient.unsafe(`ALTER TABLE practice_sessions ADD COLUMN IF NOT EXISTS progress_cursor integer NOT NULL DEFAULT 0`);
+  await sqlClient.unsafe(`
+    CREATE TABLE IF NOT EXISTS idea_notes (
+      id serial PRIMARY KEY,
+      session_id integer,
+      source_key text NOT NULL,
+      kind text NOT NULL,
+      content text NOT NULL,
+      status text NOT NULL DEFAULT 'open',
+      created_at timestamptz NOT NULL DEFAULT now()
+    )
+  `);
+  await sqlClient.unsafe(`CREATE UNIQUE INDEX IF NOT EXISTS idea_notes_source_key_unique ON idea_notes (source_key)`);
 }

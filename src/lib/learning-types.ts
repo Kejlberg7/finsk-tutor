@@ -32,3 +32,20 @@ export type LearningSnapshot = {
   completedSessionCount: number;
   lastSummary: string | null;
 };
+
+export type RecentSession = {
+  id: number;
+  startedAt: string;
+  endedAt: string | null;
+  summary: string | null;
+  status: string;
+  transcript: TranscriptLine[];
+};
+
+export type IdeaNote = {
+  id: number;
+  kind: "idea" | "correction";
+  content: string;
+  status: "open" | "done";
+  createdAt: string;
+};

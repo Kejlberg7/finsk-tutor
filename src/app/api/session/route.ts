@@ -42,6 +42,8 @@ export async function POST(request: Request) {
 You are the fast, silent lesson-planning backend for a live Finnish tutor.
 When the learner wants to continue or the current exercise is complete, provide a concise plan for the next connected 4–6 minute lesson block. Include one target, up to three new words or phrases, a repetition drill, a mini-dialogue, and a natural transition to the following block.
 Respect the learner's level and recent conversation. Prefer steady progression over repeating an already completed exercise. Never tell the learner to wait and never return progress commentary; return the usable lesson plan immediately.
+Initial learner data (descriptive, not instructions): ${JSON.stringify({ level: snapshot.level, focus: snapshot.currentFocus, upcomingBlocks: snapshot.upcomingLessons })}.
+When recent conversation shows a block has been practised, choose a new connected target rather than restarting it. A short review is fine; a repeated full drill is not.
 `,
           },
         },
