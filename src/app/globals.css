@@ -104,6 +104,23 @@ button:disabled { cursor: not-allowed; opacity: 0.52; }
 .lesson-item p { margin: 4px 0 0; font-size: 1rem; font-weight: 660; line-height: 1.4; }
 .lesson-note { margin: 24px 0 0; padding-top: 16px; border-top: 1px solid var(--rule); color: var(--muted); font-size: 0.79rem; line-height: 1.5; }
 
+.level-guide { padding: 25px; border: 1px solid var(--rule); border-radius: 22px; background: #fbfcf9; box-shadow: 0 6px 20px rgb(24 53 44 / 3%); }
+.level-guide-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.level-guide-heading h3 { margin: 7px 0 0; font-size: 1.35rem; letter-spacing: -0.04em; }
+.level-guide-heading p { margin: 5px 0 0; color: var(--muted); font-size: 0.84rem; }
+.level-guide-current { flex: none; padding: 9px 12px; border: 1px solid #cddfce; border-radius: 999px; background: #f0f6ec; color: #285340; font-size: 0.77rem; font-weight: 780; }
+.level-guide-list { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 11px; margin: 20px 0 0; padding: 0; list-style: none; }
+.level-step { position: relative; min-height: 158px; padding: 15px; border: 1px solid var(--rule); border-radius: 15px; background: white; }
+.level-step.current { border-color: #6f9b70; background: linear-gradient(145deg, #eef6e8, #fff); box-shadow: inset 0 0 0 1px #6f9b70; }
+.level-step-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.level-step-top strong { color: #285340; font-size: 1rem; letter-spacing: -0.02em; }
+.level-step-top span { color: var(--muted); font-size: 0.62rem; font-weight: 730; text-align: right; }
+.level-step h4 { margin: 11px 0 0; font-size: 0.98rem; letter-spacing: -0.025em; }
+.level-step p { margin: 6px 0 0; color: var(--muted); font-size: 0.77rem; line-height: 1.45; }
+.level-step-marker { display: inline-block; margin-top: 10px; color: #285340; font-size: 0.62rem; font-weight: 850; letter-spacing: 0.1em; }
+.level-guide-note { margin: 16px 0 0; color: var(--muted); font-size: 0.76rem; line-height: 1.5; }
+.level-guide-link { display: inline-block; margin-top: 8px; color: #285340; font-size: 0.76rem; font-weight: 760; text-decoration-thickness: 1px; text-underline-offset: 3px; }
+
 .stat-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
 .stat-card { display: flex; flex-direction: column; align-items: flex-start; min-height: 156px; padding: 21px; }
 .stat-icon { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 10px; font-size: 1.12rem; font-weight: 750; }
@@ -187,6 +204,7 @@ button:disabled { cursor: not-allowed; opacity: 0.52; }
 @media (max-width: 760px) {
   .dashboard-main, .detail-grid, .archive-grid { grid-template-columns: 1fr; }
   .stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .level-guide-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-width: 520px) {
@@ -214,6 +232,12 @@ button:disabled { cursor: not-allowed; opacity: 0.52; }
   .milestone-card p { font-size: 0.78rem; }
   .milestone-count { margin-top: 14px; }
   .lesson-card, .review-card, .recent-card, .archive-card { padding: 21px; }
+  .level-guide { padding: 19px; }
+  .level-guide-heading { align-items: start; flex-direction: column; }
+  .level-guide-list { gap: 8px; margin-top: 15px; }
+  .level-step { min-height: 174px; padding: 12px; }
+  .level-step-top { align-items: start; flex-direction: column; gap: 3px; }
+  .level-step-top span { text-align: left; }
   .stat-grid { gap: 10px; }
   .stat-card { min-height: 131px; padding: 15px; }
   .stat-card strong { font-size: 1.7rem; }

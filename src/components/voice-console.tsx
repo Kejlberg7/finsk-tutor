@@ -20,6 +20,16 @@ const EMPTY_LEARNING: LearningSnapshot = {
   lastSummary: null,
 };
 
+const LANGUAGE_LEVELS = [
+  { code: "A0", label: "Helt ny", description: "Lærer de første ord og korte sætninger med støtte.", note: "Appens starttrin" },
+  { code: "A1", label: "Begynder", description: "Kan bruge enkle hverdagsudtryk og fortælle basale ting om sig selv.", note: "Grundlæggende bruger" },
+  { code: "A2", label: "På vej", description: "Kan klare korte, rutineprægede samtaler om velkendte emner.", note: "Grundlæggende bruger" },
+  { code: "B1", label: "Selvstændig", description: "Kan klare de fleste hverdagssamtaler og fortælle sammenhængende om kendte emner.", note: "Selvstændig bruger" },
+  { code: "B2", label: "Rutineret", description: "Kan tale mere flydende og forklare synspunkter om mange emner.", note: "Selvstændig bruger" },
+  { code: "C1", label: "Avanceret", description: "Kan forstå komplekst sprog og udtrykke sig fleksibelt og nuanceret.", note: "Kompetent bruger" },
+  { code: "C2", label: "Meget avanceret", description: "Kan forstå næsten alt og udtrykke selv små betydningsnuancer præcist.", note: "Kompetent bruger" },
+] as const;
+
 type LiveEvent = {
   type?: string;
   delta?: string;
@@ -69,6 +79,7 @@ export default function VoiceConsole() {
   const nextGoal = [5, 20, 50, 100, 200].find((goal) => learning.masteredWordCount < goal)
     ?? Math.ceil((learning.masteredWordCount + 1) / 100) * 100;
   const milestonePercent = Math.min(100, Math.round((learning.masteredWordCount / nextGoal) * 100));
+  const levelCode = learning.level.match(/\b(A0|A1|A2|B1|B2|C1|C2)\b/i)?.[1]?.toUpperCase();
 
   async function refreshHistory() {
     try {
@@ -548,6 +559,32 @@ export default function VoiceConsole() {
               <p className="lesson-note">Planen bygger på din seneste gemte samtale og dine øveord. Den opdateres, når du stopper og gemmer. Tutoren kan tilpasse rækkefølgen undervejs.{learning.upcomingLessons.length < 3 ? " Flere blokke vises efter din næste gemte samtale." : ""}</p>
             </section>
           </div>
+
+          <section className="level-guide" aria-labelledby="level-guide-title">
+            <div className="level-guide-heading">
+              <div>
+                <span className="card-kicker">NIVEAUSTIGEN</span>
+                <h3 id="level-guide-title">Alle sprogniveauer</h3>
+                <p>En guide til rejsen fra de første ord til avanceret finsk.</p>
+              </div>
+              <span className="level-guide-current">Dit niveau: {levelCode ?? "Afventer"}</span>
+            </div>
+            <ol className="level-guide-list">
+              {LANGUAGE_LEVELS.map((level) => {
+                const current = level.code === levelCode;
+                return (
+                  <li className={current ? "level-step current" : "level-step"} key={level.code} aria-current={current ? "step" : undefined}>
+                    <div className="level-step-top"><strong>{level.code}</strong><span>{level.note}</span></div>
+                    <h4>{level.label}</h4>
+                    <p>{level.description}</p>
+                    {current ? <span className="level-step-marker">DIT NIVEAU</span> : null}
+                  </li>
+                );
+              })}
+            </ol>
+            <p className="level-guide-note">A0 er Finsk Tutors interne starttrin. Europarådets CEFR-skala går fra A1 til C2. Niveauet her er et vejledende skøn ud fra dine samtaler, ikke en officiel test.</p>
+            <a className="level-guide-link" href="https://www.coe.int/en/web/common-european-framework-reference-languages/level-descriptions" target="_blank" rel="noreferrer">Læs om CEFR hos Europarådet ↗</a>
+          </section>
 
           <div className="stat-grid" aria-label="Dine øvestatistikker">
             <div className="stat-card"><span className="stat-icon green" aria-hidden="true">✧</span><strong>{learning.knownWordCount}</strong><span>Ord mødt</span></div>
