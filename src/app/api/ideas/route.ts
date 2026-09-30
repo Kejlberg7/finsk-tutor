@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { ensureDatabaseSchema, getDatabase, isDatabaseConfigured } from "@/db";
 import { ideaNotes, practiceSessions } from "@/db/schema";
 import { getSessionFromRequest } from "@/lib/auth";
-import { extractIdeaCue } from "@/lib/idea-cue";
+import { extractIdeaCues } from "@/lib/idea-cue";
 import type { IdeaNote } from "@/lib/learning-types";
 
 export async function GET(request: Request) {
@@ -27,15 +27,16 @@ export async function POST(request: Request) {
   }
   if (!isDatabaseConfigured()) return NextResponse.json({ error: "Hukommelsen er ikke sat op." }, { status: 503 });
   const body = (await request.json().catch(() => null)) as {
-    sessionId?: unknown; sourceKey?: unknown; utterance?: unknown;
+    sessionId?: unknown; sourceKey?: unknown; utterance?: unknown; noteIndex?: unknown;
   } | null;
   if (!Number.isInteger(body?.sessionId) || typeof body?.sessionId !== "number"
     || typeof body.sourceKey !== "string" || !/^[0-9a-f-]{36}$/i.test(body.sourceKey)
-    || typeof body.utterance !== "string" || body.utterance.length > 2_000) {
+    || typeof body.utterance !== "string" || body.utterance.length > 2_000
+    || (body.noteIndex !== undefined && (!Number.isInteger(body.noteIndex) || typeof body.noteIndex !== "number" || body.noteIndex < 0 || body.noteIndex > 3))) {
     return NextResponse.json({ error: "Ugyldig note." }, { status: 400 });
   }
-  const cue = extractIdeaCue(body.utterance);
-  if (!cue) return NextResponse.json({ error: "Sig fx 'Notér idé: ...' for at gemme en note." }, { status: 400 });
+  const cue = extractIdeaCues(body.utterance)[typeof body.noteIndex === "number" ? body.noteIndex : 0];
+  if (!cue) return NextResponse.json({ error: "Ingen tydelig idé eller apprettelse fundet." }, { status: 400 });
   try {
     await ensureDatabaseSchema();
     const db = getDatabase();

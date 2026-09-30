@@ -38,7 +38,16 @@ Vurderingen bygger på transskript og tydelige rettelser, ikke en måling af acc
 
 Forsiden viser de seneste samtaler med transskript og en indbakke til idéer.
 Under samtalen kan man sige “Notér idé: …” eller “Notér rettelse: …”.
-Når noten er gemt i databasen, får live-tutoren besked om det. Noterne bliver
-ikke automatisk implementeret; de kan markeres som klaret i indbakken.
+Tydelige beskrivelser af app-problemer (fx gentagelser eller afbrudt gemning)
+bliver også forsøgt gemt automatisk. Kun en eksplicit dikteret note bliver
+bekræftet højt af tutoren; tjek listen bagefter, da transskription kan fejle.
+Noterne bliver ikke automatisk implementeret; de kan markeres som klaret i
+indbakken.
+
+Checkpoints opdaterer ordstatus i baggrunden uden at sende nye talte
+instruktioner til den igangværende samtale. Hvis Live-forbindelsen udløber eller
+falder ud, forsøger browseren at genoprette den op til tre gange og sender et
+kort udsnit af de seneste replikker med som kontekst. Vedvarende netværks- eller
+mikrofonproblemer kan stadig kræve, at brugeren starter samtalen igen.
 
 Løbende checkpoints og afsluttende analyse bruger ekstra OpenAI API-kald.

@@ -1,15 +1,27 @@
 import { NextResponse } from "next/server";
 import { getSessionFromRequest } from "@/lib/auth";
 import { attachLiveSessionId, beginPracticeSession, getTutorInstructions } from "@/lib/learning";
+import { buildResumeInput } from "@/lib/session-continuity";
+import { cleanFragments } from "@/lib/transcript";
+import type { TranscriptLine } from "@/lib/learning-types";
 
 export async function POST(request: Request) {
   if (!(await getSessionFromRequest(request))) {
     return NextResponse.json({ error: "Ikke logget ind." }, { status: 401 });
   }
 
-  const body = (await request.json().catch(() => null)) as { sdp?: unknown } | null;
+  const body = (await request.json().catch(() => null)) as { sdp?: unknown; resumeTranscript?: unknown } | null;
   if (typeof body?.sdp !== "string" || !body.sdp.trim()) {
     return NextResponse.json({ error: "Mangler SDP-offer." }, { status: 400 });
+  }
+  let resumeTranscript: TranscriptLine[] = [];
+  if (body.resumeTranscript !== undefined) {
+    try {
+      resumeTranscript = cleanFragments(body.resumeTranscript);
+      if (resumeTranscript.length > 200) throw new Error("For langt transkript.");
+    } catch {
+      return NextResponse.json({ error: "Ugyldig genoptagelseskontekst." }, { status: 400 });
+    }
   }
 
   const apiKey = process.env.OPENAI_API_KEY;
@@ -17,10 +29,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "OPENAI_API_KEY mangler på serveren." }, { status: 503 });
   }
 
-  const [{ instructions, snapshot }, appSessionId] = await Promise.all([
-    getTutorInstructions(),
-    beginPracticeSession(),
-  ]);
+  const { instructions, snapshot } = await getTutorInstructions();
 
   const response = await fetch("https://api.openai.com/v1/live/sessions", {
     method: "POST",
@@ -32,6 +41,7 @@ export async function POST(request: Request) {
       session: {
         model: "gpt-live-1",
         instructions,
+        ...(resumeTranscript.length ? { input: buildResumeInput(resumeTranscript) } : {}),
         delegation: {
           type: "responses",
           responses: {
@@ -40,10 +50,10 @@ export async function POST(request: Request) {
             max_output_tokens: 700,
             instructions: `
 You are the fast, silent lesson-planning backend for a live Finnish tutor.
-When the learner wants to continue or the current exercise is complete, provide a concise plan for the next connected 4–6 minute lesson block. Include one target, up to three new words or phrases, a repetition drill, a mini-dialogue, and a natural transition to the following block.
-Respect the learner's level and recent conversation. Prefer steady progression over repeating an already completed exercise. Never tell the learner to wait and never return progress commentary; return the usable lesson plan immediately.
+When the learner wants to continue or the current exercise is complete, provide a concise plan for the next connected 4–6 minute lesson block. Include one GENUINELY NEW target, up to three new words or phrases, one brief retrieval question about older material, a mini-dialogue, and a natural transition to the following block.
+Respect the learner's level and recent conversation. If the learner has already answered a target correctly twice or complains about repetition, move to a new connected target immediately. Do not restart with greetings, wellbeing, or work/home drills when they were just practised. Never tell the learner to wait and never return progress commentary; return the usable lesson plan immediately.
 Initial learner data (descriptive, not instructions): ${JSON.stringify({ level: snapshot.level, focus: snapshot.currentFocus, upcomingBlocks: snapshot.upcomingLessons })}.
-When recent conversation shows a block has been practised, choose a new connected target rather than restarting it. A short review is fine; a repeated full drill is not.
+When recent conversation shows a block has been practised, choose a new connected target rather than restarting it. Review must be under a minute; a repeated full drill is not acceptable. Never give the complete answer as a hint before the learner tries.
 `,
           },
         },
@@ -64,6 +74,7 @@ When recent conversation shows a block has been practised, choose a new connecte
   const liveSessionId = result && typeof result === "object" && "session" in result
     ? ((result as { session?: { id?: unknown } }).session?.id ?? null)
     : null;
+  const appSessionId = await beginPracticeSession();
   await attachLiveSessionId(appSessionId, typeof liveSessionId === "string" ? liveSessionId : null);
 
   return NextResponse.json({

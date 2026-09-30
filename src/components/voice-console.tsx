@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { extractIdeaCue } from "@/lib/idea-cue";
+import { extractIdeaCues } from "@/lib/idea-cue";
+import { shouldAutoResume } from "@/lib/session-continuity";
 import type { IdeaNote, LearningSnapshot, RecentSession, TranscriptLine } from "@/lib/learning-types";
 
 const EMPTY_LEARNING: LearningSnapshot = {
@@ -26,6 +27,7 @@ type LiveEvent = {
   end_ms?: number;
   error?: { message?: string };
   event?: { type?: string };
+  reason?: string;
 };
 
 export default function VoiceConsole() {
@@ -50,12 +52,20 @@ export default function VoiceConsole() {
   const pendingUserRef = useRef("");
   const ideaTimerRef = useRef<number | null>(null);
   const ideaTasksRef = useRef<Set<Promise<void>>>(new Set());
+  const notedFeedbackRef = useRef<Set<string>>(new Set());
   const checkpointTimerRef = useRef<number | null>(null);
   const checkpointPromiseRef = useRef<Promise<void> | null>(null);
   const progressCursorRef = useRef(0);
   const appSessionIdRef = useRef<number | null>(null);
   const finalisingRef = useRef(false);
   const closeTimerRef = useRef<number | null>(null);
+  const connectionTimerRef = useRef<number | null>(null);
+  const reconnectTimerRef = useRef<number | null>(null);
+  const reconnectAttemptsRef = useRef(0);
+  const connectedAtRef = useRef(0);
+  const manualStopRef = useRef(false);
+  const finishRef = useRef<((reason: string) => void) | null>(null);
+  const unmountedRef = useRef(false);
   const nextGoal = [5, 20, 50, 100, 200].find((goal) => learning.masteredWordCount < goal)
     ?? Math.ceil((learning.masteredWordCount + 1) / 100) * 100;
   const milestonePercent = Math.min(100, Math.round((learning.masteredWordCount / nextGoal) * 100));
@@ -79,6 +89,7 @@ export default function VoiceConsole() {
   }
 
   useEffect(() => {
+    unmountedRef.current = false;
     void fetch("/api/learning", { cache: "no-store", credentials: "same-origin" })
       .then(async (response) => {
         if (!response.ok) throw new Error("Kunne ikke hente læringsplanen.");
@@ -96,8 +107,11 @@ export default function VoiceConsole() {
       .catch(() => setIdeasError("Kunne ikke hente idéer lige nu."));
     return () => {
       if (closeTimerRef.current) window.clearTimeout(closeTimerRef.current);
+      if (connectionTimerRef.current) window.clearTimeout(connectionTimerRef.current);
+      if (reconnectTimerRef.current) window.clearTimeout(reconnectTimerRef.current);
       if (ideaTimerRef.current) window.clearTimeout(ideaTimerRef.current);
       if (checkpointTimerRef.current) window.clearInterval(checkpointTimerRef.current);
+      unmountedRef.current = true;
       microphoneRef.current?.getTracks().forEach((track) => track.stop());
       peerRef.current?.close();
     };
@@ -129,41 +143,48 @@ export default function VoiceConsole() {
     ideaTimerRef.current = null;
     const utterance = pendingUserRef.current.trim();
     pendingUserRef.current = "";
-    if (!extractIdeaCue(utterance)) return;
+    const cues = extractIdeaCues(utterance);
+    if (!cues.length) return;
     const sessionId = appSessionIdRef.current;
     if (!sessionId) {
-      setIdeaMessage("Idéen kunne ikke gemmes, fordi samtalen ikke er forbundet endnu.");
+      setIdeaMessage("Feedback kunne ikke gemmes, fordi samtalen ikke er forbundet endnu.");
       return;
     }
-    const task = persistIdea(utterance, sessionId);
-    ideaTasksRef.current.add(task);
-    void task.finally(() => { ideaTasksRef.current.delete(task); });
+    cues.forEach((cue, noteIndex) => {
+      const key = `${cue.kind}:${cue.content.toLocaleLowerCase("da-DK")}`;
+      if (notedFeedbackRef.current.has(key)) return;
+      notedFeedbackRef.current.add(key);
+      const task = persistIdea(utterance, sessionId, noteIndex, key, cue.explicit);
+      ideaTasksRef.current.add(task);
+      void task.finally(() => { ideaTasksRef.current.delete(task); });
+    });
   }
 
-  async function persistIdea(utterance: string, sessionId: number) {
+  async function persistIdea(utterance: string, sessionId: number, noteIndex: number, key: string, explicit: boolean) {
     try {
       const response = await fetch("/api/ideas", {
         method: "POST",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
         signal: AbortSignal.timeout(15_000),
-        body: JSON.stringify({ sessionId, sourceKey: crypto.randomUUID(), utterance }),
+        body: JSON.stringify({ sessionId, sourceKey: crypto.randomUUID(), utterance, noteIndex }),
       });
       const payload: unknown = await response.json().catch(() => null);
       if (!response.ok) throw new Error(apiErrorMessage(payload));
       const note = payload as IdeaNote;
       setIdeas((current) => [note, ...current.filter((item) => item.id !== note.id)]);
       setIdeasError("");
-      setIdeaMessage("Idé gemt til senere.");
-      if (appSessionIdRef.current === sessionId) sendEvent({
+      setIdeaMessage("Feedback gemt til senere.");
+      if (explicit && appSessionIdRef.current === sessionId) sendEvent({
         type: "session.commentary.append",
         event_id: `idea_saved_${note.id}`,
         delegation_id: null,
         content: "Your app-feedback note was saved for later. Briefly acknowledge that it is saved, then continue the Finnish lesson.",
       });
     } catch (error) {
-      setIdeaMessage(error instanceof Error ? `Idéen blev ikke gemt: ${error.message}` : "Idéen blev ikke gemt.");
-      if (appSessionIdRef.current === sessionId) sendEvent({
+      notedFeedbackRef.current.delete(key);
+      setIdeaMessage(error instanceof Error ? `Feedback blev ikke gemt: ${error.message}` : "Feedback blev ikke gemt.");
+      if (explicit && appSessionIdRef.current === sessionId) sendEvent({
         type: "session.commentary.append",
         event_id: `idea_failed_${crypto.randomUUID()}`,
         delegation_id: null,
@@ -200,6 +221,7 @@ export default function VoiceConsole() {
           method: "POST",
           credentials: "same-origin",
           headers: { "Content-Type": "application/json" },
+          signal: AbortSignal.timeout(55_000),
           body: JSON.stringify({ sessionId, fragments }),
         });
         const payload: unknown = await response.json().catch(() => null);
@@ -208,23 +230,24 @@ export default function VoiceConsole() {
           learning: LearningSnapshot; progressCursor: number; correctWords: string[];
           difficultWords: string[]; suggestedNextBlock: string | null;
         };
+        if (appSessionIdRef.current !== sessionId) return;
         const advanced = result.progressCursor > progressCursorRef.current;
         progressCursorRef.current = result.progressCursor;
         setLearning(result.learning);
         setProgressMessage(advanced
           ? `Ordstatus gemt kl. ${new Intl.DateTimeFormat("da-DK", { hour: "2-digit", minute: "2-digit" }).format(new Date())}.`
           : "Venter på en afsluttet øvelse før næste opdatering.");
-        if (result.suggestedNextBlock) {
+        if (advanced && result.suggestedNextBlock) {
           sendEvent({
-            type: "session.instructions.append",
+            type: "session.thinking.append",
             event_id: `progress_${result.progressCursor}`,
             delegation_id: null,
-            content: `Live learning checkpoint. Clearly successful words: ${result.correctWords.join(", ") || "none yet"}. Words needing another attempt: ${result.difficultWords.join(", ") || "none noted"}. Suggested connected next block: ${result.suggestedNextBlock.slice(0, 180)}. Avoid repeating a finished drill; after a few attempts, transition into the next block without waiting for the learner to ask.`,
+            content: `Background learning state, not an instruction to pause: successful items ${result.correctWords.join(", ") || "none"}; items needing another attempt ${result.difficultWords.join(", ") || "none"}; connected next target ${result.suggestedNextBlock.slice(0, 180)}. Keep the current conversation flowing.`,
           });
         }
         void refreshHistory();
       } catch (error) {
-        setProgressMessage(error instanceof Error ? `Ordstatus kunne ikke gemmes endnu: ${error.message}` : "Ordstatus kunne ikke gemmes endnu.");
+        if (appSessionIdRef.current === sessionId) setProgressMessage(error instanceof Error ? `Ordstatus kunne ikke gemmes endnu: ${error.message}` : "Ordstatus kunne ikke gemmes endnu.");
       }
     })();
     checkpointPromiseRef.current = task;
@@ -235,6 +258,8 @@ export default function VoiceConsole() {
   function closeConnection() {
     if (closeTimerRef.current) window.clearTimeout(closeTimerRef.current);
     closeTimerRef.current = null;
+    if (connectionTimerRef.current) window.clearTimeout(connectionTimerRef.current);
+    connectionTimerRef.current = null;
     if (checkpointTimerRef.current) window.clearInterval(checkpointTimerRef.current);
     checkpointTimerRef.current = null;
     microphoneRef.current?.getTracks().forEach((track) => track.stop());
@@ -243,25 +268,49 @@ export default function VoiceConsole() {
     microphoneRef.current = null;
     channelRef.current = null;
     peerRef.current = null;
+    finishRef.current = null;
     if (audioRef.current) audioRef.current.srcObject = null;
     setActive(false);
     setConnecting(false);
   }
 
-  async function start() {
-    setStatus("Forbinder…");
+  function scheduleReconnect(resumeTranscript: TranscriptLine[]) {
+    if (manualStopRef.current || unmountedRef.current) return;
+    if (reconnectAttemptsRef.current >= 3) {
+      setConnecting(false);
+      setStatus("Forbindelsen blev afbrudt. Kunne ikke genoptage automatisk — tryk Start samtale, når det er sikkert.");
+      return;
+    }
+    const attempt = ++reconnectAttemptsRef.current;
     setConnecting(true);
-    setTranscript([]);
-    transcriptRef.current = [];
+    setStatus("Forbindelsen blev afbrudt. Genoptager samtalen automatisk…");
+    reconnectTimerRef.current = window.setTimeout(() => {
+      reconnectTimerRef.current = null;
+      void start(resumeTranscript, true);
+    }, attempt * 1_000);
+  }
+
+  async function start(resumeTranscript: TranscriptLine[] = [], automatic = false) {
+    if (!automatic) {
+      manualStopRef.current = false;
+      reconnectAttemptsRef.current = 0;
+      notedFeedbackRef.current.clear();
+      setTranscript([]);
+      transcriptRef.current = [];
+    }
+    setStatus(automatic ? "Genoptager samtalen…" : "Forbinder…");
+    setConnecting(true);
     rawTranscriptRef.current = [];
     pendingUserRef.current = "";
     progressCursorRef.current = 0;
-    setIdeaMessage("");
+    checkpointPromiseRef.current = null;
+    if (!automatic) setIdeaMessage("");
     setProgressMessage("Ordstatus opdateres cirka hvert 3. minut efter afsluttede øvelser.");
     appSessionIdRef.current = null;
     finalisingRef.current = false;
-    setSaving(false);
+    if (!automatic) setSaving(false);
 
+    let finished = false;
     try {
       const peer = new RTCPeerConnection();
       peerRef.current = peer;
@@ -277,6 +326,30 @@ export default function VoiceConsole() {
 
       const channel = peer.createDataChannel("oai-events");
       channelRef.current = channel;
+      const finish = (reason: string) => {
+        if (finished || unmountedRef.current) return;
+        finished = true;
+        const context = transcriptRef.current.length ? [...transcriptRef.current] : resumeTranscript;
+        const recover = shouldAutoResume(reason, manualStopRef.current);
+        if (recover && Date.now() - connectedAtRef.current > 60_000) reconnectAttemptsRef.current = 0;
+        void saveSession(recover);
+        closeConnection();
+        if (recover) scheduleReconnect(context);
+        else if (!manualStopRef.current && reason !== "close_requested") {
+          setStatus(reason === "content" ? "Samtalen blev stoppet af sikkerhedshensyn." : "Samtalen blev afbrudt.");
+        }
+      };
+      finishRef.current = finish;
+      channel.onclose = () => {
+        if (!finished && !connectionTimerRef.current) {
+          connectionTimerRef.current = window.setTimeout(() => finish("connection_lost"), 1_500);
+        }
+      };
+      peer.onconnectionstatechange = () => {
+        if (peer.connectionState === "failed" && !finished && !connectionTimerRef.current) {
+          connectionTimerRef.current = window.setTimeout(() => finish("connection_lost"), 1_500);
+        }
+      };
       channel.onmessage = (message) => {
         const event = safeLiveEvent(message.data);
         if (!event) return;
@@ -284,9 +357,11 @@ export default function VoiceConsole() {
           setStatus("Forbundet — tal bare.");
           sendEvent({
             type: "session.instructions.append",
-            event_id: "start_lesson",
+            event_id: automatic ? "resume_lesson" : "start_lesson",
             delegation_id: null,
-            content: "Open the lesson now with a very brief English greeting and today's focus, then give the first short Finnish phrase.",
+            content: automatic
+              ? "Continue the interrupted Finnish lesson now, without a greeting or repeated review. Use the supplied conversation history and teach the next useful step."
+              : "Open the lesson now with a very brief English greeting and today's NEW focus, then give the first short Finnish phrase.",
           });
         }
         if (event.type === "session.delegation.created") {
@@ -297,8 +372,7 @@ export default function VoiceConsole() {
         }
         if (event.type === "session.closed") {
           void flushIdea();
-          closeConnection();
-          void saveSession();
+          finish(event.reason ?? "connection_lost");
         }
         if (event.type === "session.input_transcript.delta") updateTranscript("dig", event);
         if (event.type === "session.output_transcript.delta") updateTranscript("tutor", event);
@@ -315,7 +389,10 @@ export default function VoiceConsole() {
         method: "POST",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sdp }),
+        body: JSON.stringify({
+          sdp,
+          ...(automatic ? { resumeTranscript: resumeTranscript.slice(-30).map((line) => ({ speaker: line.speaker, text: line.text.slice(-600) })) } : {}),
+        }),
       });
       if (!response.ok) {
         const payload: unknown = await response.json().catch(() => null);
@@ -327,58 +404,67 @@ export default function VoiceConsole() {
         learning?: LearningSnapshot;
       };
       if (!result.transport?.sdp) throw new Error("OpenAI returnerede ikke et SDP-svar.");
+      if (manualStopRef.current || unmountedRef.current) throw new Error("Samtalen blev afbrudt under opstart.");
       appSessionIdRef.current = result.app_session_id ?? null;
       if (result.learning) setLearning(result.learning);
       await peer.setRemoteDescription({ type: "answer", sdp: result.transport.sdp });
+      connectedAtRef.current = Date.now();
       setActive(true);
       setConnecting(false);
       checkpointTimerRef.current = window.setInterval(() => { void checkpoint(); }, 150_000);
     } catch (error) {
+      finished = true;
       closeConnection();
-      setStatus(error instanceof Error ? error.message : "Kunne ikke starte samtalen.");
+      if (automatic && !manualStopRef.current) scheduleReconnect(resumeTranscript);
+      else if (!manualStopRef.current) setStatus(error instanceof Error ? error.message : "Kunne ikke starte samtalen.");
     }
   }
 
   function stop() {
+    manualStopRef.current = true;
+    if (reconnectTimerRef.current) window.clearTimeout(reconnectTimerRef.current);
+    reconnectTimerRef.current = null;
     setStatus("Afslutter og gemmer samtalen…");
     void flushIdea();
     if (channelRef.current?.readyState === "open") {
       sendEvent({ type: "session.close" });
       closeTimerRef.current = window.setTimeout(() => {
-        closeConnection();
-        void saveSession();
+        finishRef.current?.("close_requested");
       }, 2500);
       return;
     }
-    closeConnection();
-    void saveSession();
+    if (finishRef.current) finishRef.current("close_requested");
+    else {
+      closeConnection();
+      setStatus("Samtalen er stoppet.");
+    }
   }
 
   function sendEvent(event: Record<string, unknown>) {
     if (channelRef.current?.readyState === "open") channelRef.current.send(JSON.stringify(event));
   }
 
-  async function saveSession() {
+  async function saveSession(background = false) {
     if (finalisingRef.current) return;
     finalisingRef.current = true;
-    setSaving(true);
+    if (!background) setSaving(true);
     const sessionId = appSessionIdRef.current;
-    if (checkpointPromiseRef.current) await checkpointPromiseRef.current;
-    await Promise.all([...ideaTasksRef.current]);
-    const finalTranscript = rawTranscriptRef.current;
+    const finalTranscript = [...rawTranscriptRef.current];
+    const pendingCheckpoint = checkpointPromiseRef.current;
+    const pendingIdeas = [...ideaTasksRef.current];
+    if (pendingCheckpoint) await pendingCheckpoint;
+    await Promise.all(pendingIdeas);
 
     if (!sessionId) {
-      setStatus("Samtalen er afsluttet. Hukommelsen er ikke sat op endnu.");
-      setSaving(false);
+      if (!background) { setStatus("Samtalen er afsluttet. Hukommelsen er ikke sat op endnu."); setSaving(false); }
       return;
     }
     if (!finalTranscript.some((line) => line.text.trim())) {
-      setStatus("Samtalen er afsluttet, men der var intet transkript at gemme.");
-      setSaving(false);
+      if (!background) { setStatus("Samtalen er afsluttet, men der var intet transkript at gemme."); setSaving(false); }
       return;
     }
 
-    setStatus("Samtalen analyseres og føjes til din læringsplan…");
+    if (!background) setStatus("Samtalen analyseres og føjes til din læringsplan…");
     try {
       const response = await fetch("/api/session/complete", {
         method: "POST",
@@ -392,11 +478,12 @@ export default function VoiceConsole() {
       if (nextLearning) setLearning(nextLearning);
       void refreshHistory();
       void refreshIdeas();
-      setStatus("Gemt — næste samtale fortsætter ud fra det, du øvede.");
+      if (!background) setStatus("Gemt — næste samtale fortsætter ud fra det, du øvede.");
     } catch (error) {
-      setStatus(error instanceof Error ? `Samtalen sluttede, men blev ikke gemt: ${error.message}` : "Samtalen sluttede, men blev ikke gemt.");
+      if (background) setProgressMessage(error instanceof Error ? `En afbrudt samtaledel blev ikke gemt: ${error.message}` : "En afbrudt samtaledel blev ikke gemt.");
+      else setStatus(error instanceof Error ? `Samtalen sluttede, men blev ikke gemt: ${error.message}` : "Samtalen sluttede, men blev ikke gemt.");
     } finally {
-      setSaving(false);
+      if (!background) setSaving(false);
     }
   }
 
@@ -418,10 +505,10 @@ export default function VoiceConsole() {
             <h1 id="welcome-title">Puhu rohkeasti.<span>Tal med mod.</span></h1>
             <p>En rolig samtale, der husker dine ord og tager dig videre i dit eget tempo. Du kan tale dansk; tutoren forklarer på engelsk.</p>
             <div className="hero-actions">
-              <button className="primary" type="button" onClick={start} disabled={active || connecting || saving}>
+              <button className="primary" type="button" onClick={() => { void start(); }} disabled={active || connecting || saving}>
                 <span className="play-symbol" aria-hidden="true">▶</span>{connecting ? "Forbinder…" : "Start samtale"}
               </button>
-              <button className="danger" type="button" onClick={stop} disabled={!active}>Stop og gem</button>
+              <button className="danger" type="button" onClick={stop} disabled={!active && !connecting}>Stop og gem</button>
             </div>
             <div className="session-status" role="status"><span className={active ? "status-light active" : "status-light"} aria-hidden="true" />{status}</div>
             <div className="live-progress" role="status">{progressMessage}</div>
@@ -524,7 +611,7 @@ export default function VoiceConsole() {
             <section className="archive-card" aria-labelledby="ideas-title">
               <span className="card-kicker">TIL SENERE</span>
               <h3 id="ideas-title">Idéer og rettelser</h3>
-              <p className="archive-help">Mens du taler, kan du sige <strong>“Notér idé: …”</strong> eller <strong>“Notér rettelse: …”</strong>. Appen gemmer noten med det samme.</p>
+              <p className="archive-help">Sig <strong>“Notér idé: …”</strong> eller <strong>“Notér rettelse: …”</strong>. Tydeligt beskrevne problemer med appen kan også blive gemt automatisk. Tjek altid listen bagefter.</p>
               {ideaMessage ? <p className="idea-message" role="status">{ideaMessage}</p> : null}
               {ideasError ? <p className="empty-copy">{ideasError}</p> : ideas.length ? (
                 <ul className="idea-list">

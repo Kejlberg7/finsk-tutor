@@ -1,18 +1,39 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { extractIdeaCue } from "../src/lib/idea-cue";
+import { extractIdeaCue, extractIdeaCues } from "../src/lib/idea-cue";
+import { buildResumeInput, shouldAutoResume } from "../src/lib/session-continuity";
 import { cleanFragments, compactTranscript, completedTurnCutoff } from "../src/lib/transcript";
 import type { TranscriptLine } from "../src/lib/learning-types";
 
-test("voice notes require a deliberate cue", () => {
+test("explicit notes and clearly stated app problems are captured", () => {
   assert.deepEqual(extractIdeaCue("Notér idé: Vis mine sidste samtaler"), {
-    kind: "idea", content: "Vis mine sidste samtaler",
+    kind: "idea", content: "Vis mine sidste samtaler", explicit: true,
   });
   assert.deepEqual(extractIdeaCue("Noter en rettelse: Lektionen gentager sig"), {
-    kind: "correction", content: "Lektionen gentager sig",
+    kind: "correction", content: "Lektionen gentager sig", explicit: true,
   });
+  assert.equal(extractIdeaCues("Når du gemmer status, stopper samtalen og jeg skal starte samtalen igen. Vi kører i ring.").length, 2);
+  assert.match(extractIdeaCue("Det var ikke rigtig et hint, du sagde det jeg skulle sige")?.content ?? "", /hint/);
   assert.equal(extractIdeaCue("Gentag det finske ord igen"), null);
   assert.equal(extractIdeaCue("Husk ordet kiitos"), null);
+  assert.equal(extractIdeaCue("Jeg sagde töissä, men det skulle være töihin"), null);
+});
+
+test("an interrupted lesson resumes with bounded recent history", () => {
+  const fragments: TranscriptLine[] = [
+    { speaker: "dig", text: "Skal vi videre til noget nyt?" },
+    { speaker: "tutor", text: "Yes. Next: opiskelen tänään." },
+    { speaker: "dig", text: "Opiskelen tänään." },
+  ];
+  const input = buildResumeInput(fragments);
+  assert.equal(input.length, 4);
+  assert.equal(input[0].role, "developer");
+  assert.equal(input.at(-1)?.content[0].text, "Opiskelen tänään.");
+  assert.equal(buildResumeInput([]).length, 0);
+  assert.equal(shouldAutoResume("connection_lost", false), true);
+  assert.equal(shouldAutoResume("expired", false), true);
+  assert.equal(shouldAutoResume("content", false), false);
+  assert.equal(shouldAutoResume("connection_lost", true), false);
 });
 
 test("checkpoints only score completed learner-and-tutor exchanges", () => {

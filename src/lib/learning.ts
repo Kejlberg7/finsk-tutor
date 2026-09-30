@@ -115,14 +115,19 @@ export async function getLearningSnapshot(): Promise<LearningSnapshot> {
 export async function getTutorInstructions(): Promise<{ instructions: string; snapshot: LearningSnapshot }> {
   const snapshot = await getLearningSnapshot();
   let familiarWords: Array<{ finnish: string; english: string; mastery: number }> = [];
+  let recentSummaries: string[] = [];
 
   if (snapshot.memoryReady) {
     try {
-      familiarWords = await getDatabase()
-        .select({ finnish: vocabulary.finnish, english: vocabulary.english, mastery: vocabulary.mastery })
-        .from(vocabulary)
-        .orderBy(desc(vocabulary.mastery), desc(vocabulary.lastSeenAt))
-        .limit(15);
+      const [words, sessions] = await Promise.all([
+        getDatabase().select({ finnish: vocabulary.finnish, english: vocabulary.english, mastery: vocabulary.mastery })
+          .from(vocabulary).orderBy(desc(vocabulary.mastery), desc(vocabulary.lastSeenAt)).limit(20),
+        getDatabase().select({ summary: practiceSessions.summary }).from(practiceSessions)
+          .where(and(eq(practiceSessions.status, "completed"), isNotNull(practiceSessions.summary)))
+          .orderBy(desc(practiceSessions.endedAt)).limit(3),
+      ]);
+      familiarWords = words;
+      recentSummaries = sessions.map((row) => row.summary).filter((value): value is string => Boolean(value));
     } catch (error) {
       console.error("Could not load familiar words", error);
     }
@@ -134,6 +139,7 @@ export async function getTutorInstructions(): Promise<{ instructions: string; sn
   const familiar = familiarWords.length
     ? familiarWords.map((word) => `${word.finnish} (${word.english}, score ${word.mastery}/5)`).join(", ")
     : "none recorded yet";
+  const secure = familiarWords.filter((word) => word.mastery >= 4).map((word) => word.finnish).join(", ") || "none yet";
   const upcoming = snapshot.upcomingLessons.map((lesson, index) => `${index + 1}. ${lesson}`).join("; ");
 
   const instructions = `
@@ -146,7 +152,7 @@ LANGUAGE AND AUDIO
 - This is hands-free audio, often used while driving. Never ask the learner to read, tap, type, or look at the screen.
 
 TEACHING METHOD
-- Begin with a brief English greeting and state today's focus.
+- For a genuinely new visit, begin with a brief English greeting and state today's new focus. If prior conversation is supplied for a reconnection, skip the greeting and continue immediately.
 - Teach one short Finnish phrase at a time, then pause for the learner to repeat it.
 - Review due words before adding new material.
 - Give more practice to words with low scores or repeated errors. Reuse high-score words only as occasional spaced review or sentence building.
@@ -156,18 +162,31 @@ TEACHING METHOD
 - Recycle older words in new short sentences. Do not randomly change topic.
 - If speech recognition seems uncertain, ask the learner to repeat instead of confidently marking it wrong.
 - If the learner wants to save feedback about this app, ask them to say "Notér idé: ..." or "Notér rettelse: ..." and wait for the app to confirm it was saved. Do not claim to have saved a note yourself.
+- The app may also quietly capture clearly stated app problems without a special phrase. Do not claim a note was saved unless the app confirms it.
 - End naturally when the learner asks to stop; the application saves the transcript and updates the plan afterward.
 
 SESSION PACING AND PROGRESSION
 - The learner normally practises for 20–30 minutes. Keep teaching continuously until the learner asks to stop.
 - Organize the session into connected lesson blocks of roughly 4–6 minutes.
 - A block should normally contain: a quick review, one small new concept with up to three new words, repetition, and a short question or mini-dialogue.
+- Keep review to one or two retrieval questions (under a minute). Do not begin a fresh session by re-teaching familiar greetings or a whole previously completed drill.
+- Introduce a genuinely new, connected phrase or construction in the first 90 seconds. If the learner gets a target right twice in different contexts, advance; do not demand endless repetitions of the same sentence.
+- When asking a retrieval question, do not give the full answer as a "hint". Start with no hint, then one partial cue only if needed.
+- If the learner says the material is repetitive or asks for something new, acknowledge once and actually switch to a new target immediately. Do not return to the old drill in the next few turns.
+- Do not ask "want to continue?" at the end of each block; just make a natural transition and teach the next item.
 - After a few successful attempts, briefly acknowledge progress and immediately begin the next logical block. Do not end the lesson or wait for the application.
 - If the learner says "next", "continue", "go on", "næste", or asks for the next lesson, move on immediately and start teaching. Do not merely describe what the next lesson will contain.
 - Treat the planned next lesson below as the starting point, not as the only lesson allowed in this session.
 - Choose logical continuations yourself. A useful sequence is: core phrases, a variation, question-and-answer, mini-dialogue, then mixed review. Continue with further connected blocks if time remains.
 - Never say that you are thinking, preparing, loading, checking the database, or waiting for a lesson plan. If planning is delayed, keep the learner engaged with a review question and then continue.
 - The application may send a progress checkpoint while you speak. Use it to avoid repeating completed drills and to move to the next connected block when the learner is ready.
+- A checkpoint is background work, not a pause or end to the voice conversation. Keep listening and teaching; never ask the learner to restart or press a button.
+- If the voice connection resumes after an interruption, continue from the supplied recent conversation. Do not greet, reintroduce the lesson, or ask already answered questions.
+
+FINNISH ACCURACY ANCHORS
+- For "Mitä kuuluu?", a simple model answer is "Ihan hyvää, kiitos." For "Miten menee?", "Ihan hyvin, kiitos." Never teach "Olen hyvää, kiitos."
+- "Olen töissä" means "I am at work"; "menen töihin" means "I am going to work". "Menen kotiin tänään" is also a valid activity/plan in answer to "Mitä teet tänään?"; do not mark a grammatically valid answer wrong merely because you expected a different example.
+- Do not treat imperfect speech-to-text spelling alone as evidence of a pronunciation error.
 
 LEARNER MEMORY
 - Approximate level: ${snapshot.level}
@@ -176,7 +195,8 @@ LEARNER MEMORY
 - Provisional upcoming lesson blocks: ${upcoming}
 - Due for review: ${due}
 - Familiar vocabulary: ${familiar}
-- Last session: ${snapshot.lastSummary ?? "No completed session recorded yet."}
+- Secure vocabulary (brief spaced review only): ${secure}
+- Recent sessions, newest first: ${recentSummaries.join(" | ") || "No completed session recorded yet."}
 
 Use this memory as guidance, not as a script. Do not tell the learner about database scores or internal tracking.
 `;
@@ -308,7 +328,7 @@ async function analyseTranscript(transcript: TranscriptLine[], memory: LearningS
         {
           role: "system",
           content:
-            "You evaluate a Finnish tutoring transcript. Transcription can be imperfect, so only mark an item correct or incorrect when the learner's attempt and tutor feedback clearly support it. Otherwise use introduced. If a word was attempted repeatedly, use the most recent clear attempt. Extract words and grammar results only from scoringTranscript; transcript and priorLearning provide context for summary and planning, not evidence of a new scored attempt. Ignore app-feedback notes as lesson material. If scoringTranscript is empty, return empty words and grammar arrays. For each word, feedback is a brief specific correction explicitly supported by the tutor's words, or an empty string. Mention pronunciation only if the tutor explicitly corrected pronunciation; do not infer accent from transcript spelling. Use stable lowercase ASCII keys for grammar topics. Write the summary, focus, lesson, and meanings in concise English. Plan three connected 4–6 minute upcoming lesson blocks using transcript and priorLearning; avoid repeating a completed drill and start with due review where useful. The first upcoming lesson must equal nextLesson; the other two are provisional logical continuations, not claims that they were completed. Keep each lesson title concise. The level may be A0, A1, A2, B1, B2, C1, or C2 with a short qualifier. Return structured JSON only.",
+            "You evaluate a Finnish tutoring transcript. Transcription can be imperfect, so only mark an item correct or incorrect when the learner's attempt and tutor feedback clearly support it. Otherwise use introduced. If a word was attempted repeatedly, use the most recent clear attempt. A tutor correction may itself be wrong; do not penalize a valid learner answer just because the tutor expected a different scripted answer. Extract words and grammar results only from scoringTranscript; transcript and priorLearning provide context for summary and planning, not evidence of a new scored attempt. Ignore app-feedback notes as lesson material. If scoringTranscript is empty, return empty words and grammar arrays. For each word, feedback is a brief specific correction explicitly supported by the tutor's words, or an empty string. Mention pronunciation only if the tutor explicitly corrected pronunciation; do not infer accent from transcript spelling. Use stable lowercase ASCII keys for grammar topics. Write the summary, focus, lesson, and meanings in concise English. Plan three connected 4–6 minute upcoming lesson blocks using transcript and priorLearning. The first block must introduce at least one genuinely new connected phrase or construction within 90 seconds; any due-word review should be one or two quick retrieval questions, not the main block. Never plan a full drill of phrases the learner already used successfully, even if the prior plan suggested it. If the learner complained about repetition, advance the topic decisively. The first upcoming lesson must equal nextLesson; the other two are provisional logical continuations, not claims that they were completed. Keep each lesson title concise and name the new target. The level may be A0, A1, A2, B1, B2, C1, or C2 with a short qualifier. Return structured JSON only.",
         },
         {
           role: "user",
