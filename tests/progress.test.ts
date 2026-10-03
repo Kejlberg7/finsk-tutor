@@ -19,6 +19,19 @@ test("explicit notes and clearly stated app problems are captured", () => {
   assert.equal(extractIdeaCue("Jeg sagde töissä, men det skulle være töihin"), null);
 });
 
+test("natural note-to-self wording and learning requests are saved without a magic phrase", () => {
+  assert.deepEqual(extractIdeaCue("Note til senere. Det er du, og ikke jeg, der skal blive ved med at sige fortsæt. Det bliver nødt til at være rimelig kontinuerligt."), {
+    kind: "correction",
+    content: "Det er du, og ikke jeg, der skal blive ved med at sige fortsæt. Det bliver nødt til at være rimelig kontinuerligt.",
+    explicit: true,
+  });
+  assert.deepEqual(extractIdeaCue("Jeg tænker også, det er en note til senere, at jeg også skal kunne oversætte fra finsk til dansk, så jeg forstår, hvad der bliver sagt."), {
+    kind: "idea",
+    content: "Træn begge retninger: Jeg skal både formulere ting på finsk og oversætte det, tutoren siger på finsk, til dansk, så øvelsen tester min forståelse.",
+    explicit: false,
+  });
+});
+
 test("an interrupted lesson resumes with bounded recent history", () => {
   const fragments: TranscriptLine[] = [
     { speaker: "dig", text: "Skal vi videre til noget nyt?" },

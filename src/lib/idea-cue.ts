@@ -3,6 +3,12 @@ export type IdeaCue = { kind: "idea" | "correction"; content: string; explicit: 
 /** Keep automatic notes narrow: ordinary Finnish mistakes are lesson material, not app bugs. */
 export function extractIdeaCues(utterance: string): IdeaCue[] {
   const text = utterance.trim();
+  const laterNote = text.match(/(?:^|[.!?]\s*)(?:det\s+(?:er\s+)?(?:en\s+)?)?note\s+til\s+senere\s*[:,-]?\s*(.+)$/i);
+  if (laterNote) {
+    const content = laterNote[1].trim().replace(/^[\s.,!?;:-]+/, "").slice(0, 1_500);
+    if (content.length >= 5) return [{ kind: "correction", content, explicit: true }];
+  }
+
   const explicit = text.match(
     /(?:^|[.!?]\s*)(?:kan du\s+|vil du\s+)?(?:not[eé]r|gem|husk)(?:\s+lige)?\s+(?:en\s+|et\s+)?(id[eé]|rettelse|fejl|bug|feature|funktion|ændring)(?:\s+til\s+appen)?\s*[:,-]?\s+(.+)$/i,
   );
@@ -29,6 +35,15 @@ export function extractIdeaCues(utterance: string): IdeaCue[] {
   }
   if (/(?:ikke\s+(?:rigtig\s+)?et\s+hint|gav\s+(?:mig\s+)?(?:hele\s+)?svaret\s+som\s+hint)/i.test(text)) {
     notes.push({ kind: "correction", content: "Tutoren giver nogle gange hele svaret som et hint, så øvelsen ikke tester, hvad jeg husker.", explicit: false });
+  }
+  if (/(?:blive\s+ved\s+med\s+at\s+sige\s+)?(?:fortsæt|fortsætte)/i.test(text)
+    && /(?:det\s+er\s+du|ikke\s+mig|ikke\s+jeg|selv\s+fortsætte|hele\s+tiden)/i.test(text)
+    && /(?:note|samtale|snakke|sige)/i.test(text)) {
+    notes.push({ kind: "correction", content: "Hold samtalen naturligt i gang i cirka 20 minutter. Tutoren skal selv fortsætte til næste øvelse uden at jeg gentagne gange skal sige ‘fortsæt’. En note til senere må ikke misforstås som et ønske om at stoppe.", explicit: false });
+  }
+  if (/(?:oversætte|oversættelse|forstå|hvad\s+det\s+(?:betyder|bliver\s+sagt))/i.test(text)
+    && /finsk/i.test(text) && /dansk/i.test(text)) {
+    notes.push({ kind: "idea", content: "Træn begge retninger: Jeg skal både formulere ting på finsk og oversætte det, tutoren siger på finsk, til dansk, så øvelsen tester min forståelse.", explicit: false });
   }
   return notes;
 }
