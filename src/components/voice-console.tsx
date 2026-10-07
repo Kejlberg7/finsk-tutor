@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { extractIdeaCues } from "@/lib/idea-cue";
+import { sessionPacingUpdate } from "@/lib/session-pacing";
 import { shouldAutoResume } from "@/lib/session-continuity";
 import { formatDuration } from "@/lib/duration";
 import type { IdeaNote, LearningSnapshot, RecentSession, TranscriptLine, WordProgress } from "@/lib/learning-types";
@@ -79,6 +80,7 @@ export default function VoiceConsole() {
   const reconnectTimerRef = useRef<number | null>(null);
   const reconnectAttemptsRef = useRef(0);
   const connectedAtRef = useRef(0);
+  const practiceStartedAtRef = useRef(0);
   const manualStopRef = useRef(false);
   const finishRef = useRef<((reason: string) => void) | null>(null);
   const unmountedRef = useRef(false);
@@ -272,11 +274,14 @@ export default function VoiceConsole() {
           ? `Ordstatus gemt kl. ${new Intl.DateTimeFormat("da-DK", { hour: "2-digit", minute: "2-digit" }).format(new Date())}.`
           : "Venter på en afsluttet øvelse før næste opdatering.");
         if (advanced && result.suggestedNextBlock) {
+          const elapsedSeconds = practiceStartedAtRef.current
+            ? Math.floor((Date.now() - practiceStartedAtRef.current) / 1_000)
+            : 0;
           sendEvent({
             type: "session.thinking.append",
             event_id: `progress_${result.progressCursor}`,
             delegation_id: null,
-            content: `Background learning state, not an instruction to pause: successful items ${result.correctWords.join(", ") || "none"}; items needing another attempt ${result.difficultWords.join(", ") || "none"}; connected next target ${result.suggestedNextBlock.slice(0, 180)}. Keep the current conversation flowing.`,
+            content: `Background learning state, not an instruction to pause: successful items ${result.correctWords.join(", ") || "none"}; items needing another attempt ${result.difficultWords.join(", ") || "none"}; connected next target ${result.suggestedNextBlock.slice(0, 180)}. ${sessionPacingUpdate(elapsedSeconds)} Keep the current conversation flowing.`,
           });
         }
         void refreshHistory();
@@ -328,6 +333,7 @@ export default function VoiceConsole() {
     if (!automatic) {
       manualStopRef.current = false;
       reconnectAttemptsRef.current = 0;
+      practiceStartedAtRef.current = 0;
       notedFeedbackRef.current.clear();
       setTranscript([]);
       transcriptRef.current = [];
@@ -443,6 +449,7 @@ export default function VoiceConsole() {
       if (result.learning) setLearning(result.learning);
       await peer.setRemoteDescription({ type: "answer", sdp: result.transport.sdp });
       connectedAtRef.current = Date.now();
+      if (!practiceStartedAtRef.current) practiceStartedAtRef.current = connectedAtRef.current;
       setActive(true);
       setConnecting(false);
       checkpointTimerRef.current = window.setInterval(() => { void checkpoint(); }, 150_000);

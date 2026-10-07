@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { extractIdeaCue, extractIdeaCues } from "../src/lib/idea-cue";
 import { formatDuration } from "../src/lib/duration";
+import { sessionPacingUpdate } from "../src/lib/session-pacing";
 import { buildResumeInput, shouldAutoResume } from "../src/lib/session-continuity";
 import { cleanFragments, compactTranscript, completedTurnCutoff } from "../src/lib/transcript";
 import type { TranscriptLine } from "../src/lib/learning-types";
@@ -89,4 +90,11 @@ test("practice time is displayed as minutes and hours", () => {
   assert.equal(formatDuration(60 * 60), "1 t");
   assert.equal(formatDuration(2 * 60 * 60 + 17 * 60), "2 t 17 min");
   assert.equal(formatDuration(-30), "0 min");
+});
+
+test("session pacing keeps the tutor working toward a 30-minute target", () => {
+  assert.match(sessionPacingUpdate(12 * 60), /do not wrap up or say the lesson is finished/);
+  assert.match(sessionPacingUpdate(25 * 60), /target has not yet been reached/);
+  assert.match(sessionPacingUpdate(30 * 60), /ask whether the learner wants to stop or continue/);
+  assert.match(sessionPacingUpdate(35 * 60), /do not end or disconnect on your own/);
 });
