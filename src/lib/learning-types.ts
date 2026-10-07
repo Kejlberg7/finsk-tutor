@@ -34,6 +34,7 @@ export type LearningSnapshot = {
   dueWordCount: number;
   completedSessionCount: number;
   totalPracticeSeconds: number;
+  estimatedApiCostUsd: number;
   lastSummary: string | null;
 };
 

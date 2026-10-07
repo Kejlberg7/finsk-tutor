@@ -1,8 +1,9 @@
 import "server-only";
 import { and, asc, count, desc, eq, gte, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
 import { ensureDatabaseSchema, getDatabase, isDatabaseConfigured } from "@/db";
-import { grammarSkills, learnerProfile, practiceSessions, vocabulary } from "@/db/schema";
+import { apiUsageEvents, grammarSkills, learnerProfile, practiceSessions, vocabulary } from "@/db/schema";
 import type { LearningSnapshot, TranscriptLine } from "@/lib/learning-types";
+import { estimateResponseCostUsd, readResponseTokenUsage } from "@/lib/api-cost";
 import { compactTranscript, completedTurnCutoff } from "@/lib/transcript";
 
 const DEFAULT_SNAPSHOT: LearningSnapshot = {
@@ -18,6 +19,7 @@ const DEFAULT_SNAPSHOT: LearningSnapshot = {
   dueWordCount: 0,
   completedSessionCount: 0,
   totalPracticeSeconds: 0,
+  estimatedApiCostUsd: 0,
   lastSummary: null,
 };
 
@@ -51,7 +53,7 @@ export async function getLearningSnapshot(): Promise<LearningSnapshot> {
     await ensureDatabaseSchema();
     const db = getDatabase();
     const now = new Date();
-    const [profiles, due, words, totals, mastered, dueTotal, completed, practiceTime, recentSessions] = await Promise.all([
+    const [profiles, due, words, totals, mastered, dueTotal, completed, practiceTime, voiceUsage, modelUsage, recentSessions] = await Promise.all([
       db.select().from(learnerProfile).where(eq(learnerProfile.id, 1)).limit(1),
       db
         .select({ finnish: vocabulary.finnish, english: vocabulary.english, mastery: vocabulary.mastery })
@@ -83,6 +85,10 @@ export async function getLearningSnapshot(): Promise<LearningSnapshot> {
       db.select({ value: sql<string>`COALESCE(SUM(GREATEST(0, EXTRACT(EPOCH FROM (${practiceSessions.endedAt} - ${practiceSessions.startedAt})))), 0)` })
         .from(practiceSessions)
         .where(and(isNotNull(practiceSessions.endedAt), isNotNull(practiceSessions.transcript))),
+      db.select({ value: sql<string>`COALESCE(SUM(CASE WHEN ${practiceSessions.voiceSeconds} > 0 THEN ${practiceSessions.voiceSeconds} ELSE GREATEST(0, EXTRACT(EPOCH FROM (${practiceSessions.endedAt} - ${practiceSessions.startedAt}))) END), 0)` })
+        .from(practiceSessions)
+        .where(isNotNull(practiceSessions.endedAt)),
+      db.select({ value: sql<string>`COALESCE(SUM(${apiUsageEvents.estimatedCostUsd}), 0)` }).from(apiUsageEvents),
       db
         .select({ summary: practiceSessions.summary })
         .from(practiceSessions)
@@ -112,6 +118,7 @@ export async function getLearningSnapshot(): Promise<LearningSnapshot> {
       dueWordCount: dueTotal[0]?.value ?? 0,
       completedSessionCount: completed[0]?.value ?? 0,
       totalPracticeSeconds: Math.floor(Number(practiceTime[0]?.value ?? 0)),
+      estimatedApiCostUsd: Number((Number(voiceUsage[0]?.value ?? 0) * 0.05 / 60 + Number(modelUsage[0]?.value ?? 0)).toFixed(4)),
       lastSummary: recentSessions[0]?.summary ?? null,
     };
   } catch (error) {
@@ -268,7 +275,7 @@ export async function checkpointPracticeSession(id: number, fragments: Transcrip
     .where(and(eq(practiceSessions.id, id), eq(practiceSessions.status, "started")));
   if (!freshTranscript.length) return noChange();
 
-  const review = await analyseTranscript(fullTranscript.slice(-40), await getLearningSnapshot(), freshTranscript);
+  const review = await analyseTranscript(fullTranscript.slice(-40), await getLearningSnapshot(), freshTranscript, id);
   let applied = false;
   await db.transaction(async (tx) => {
     const locked = await tx.select({ progressCursor: practiceSessions.progressCursor, status: practiceSessions.status })
@@ -307,7 +314,7 @@ export async function completePracticeSession(id: number, fragments: TranscriptL
     .where(eq(practiceSessions.id, id));
 
   try {
-    const review = await analyseTranscript(cleanTranscript, await getLearningSnapshot(), freshTranscript);
+    const review = await analyseTranscript(cleanTranscript, await getLearningSnapshot(), freshTranscript, id);
     await db.transaction(async (tx) => {
       await applyReview(review, true, tx);
       await tx.update(practiceSessions)
@@ -324,7 +331,30 @@ export async function completePracticeSession(id: number, fragments: TranscriptL
   }
 }
 
-async function analyseTranscript(transcript: TranscriptLine[], memory: LearningSnapshot, scoringTranscript = transcript): Promise<SessionReview> {
+async function storeResponseUsage(sessionId: number, payload: unknown): Promise<void> {
+  if (!payload || typeof payload !== "object") return;
+  const response = payload as { id?: unknown; model?: unknown; usage?: unknown };
+  if (typeof response.id !== "string" || typeof response.model !== "string") return;
+  const usage = readResponseTokenUsage(response.usage);
+  if (!usage) return;
+  const estimatedCostUsd = estimateResponseCostUsd(response.model, usage);
+  if (estimatedCostUsd === null) return;
+  try {
+    await getDatabase().insert(apiUsageEvents).values({
+      sessionId,
+      responseId: response.id,
+      model: response.model,
+      inputTokens: usage.inputTokens,
+      cachedInputTokens: usage.cachedInputTokens,
+      outputTokens: usage.outputTokens,
+      estimatedCostUsd: estimatedCostUsd.toFixed(10),
+    }).onConflictDoNothing();
+  } catch (error) {
+    console.error("Could not save response API usage", error);
+  }
+}
+
+async function analyseTranscript(transcript: TranscriptLine[], memory: LearningSnapshot, scoringTranscript = transcript, sessionId?: number): Promise<SessionReview> {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) throw new Error("OPENAI_API_KEY mangler på serveren.");
 
@@ -415,6 +445,7 @@ async function analyseTranscript(transcript: TranscriptLine[], memory: LearningS
 
   const payload: unknown = await response.json().catch(() => null);
   if (!response.ok) throw new Error(apiErrorMessage(payload));
+  if (sessionId) await storeResponseUsage(sessionId, payload);
   const output = responseText(payload);
   if (!output) throw new Error("OpenAI returnerede ingen sessionsanalyse.");
   return JSON.parse(output) as SessionReview;

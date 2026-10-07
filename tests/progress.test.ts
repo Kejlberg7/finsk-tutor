@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { extractIdeaCue, extractIdeaCues } from "../src/lib/idea-cue";
+import { estimateResponseCostUsd, readResponseTokenUsage } from "../src/lib/api-cost";
 import { formatDuration } from "../src/lib/duration";
 import { sessionPacingUpdate } from "../src/lib/session-pacing";
 import { buildResumeInput, shouldAutoResume } from "../src/lib/session-continuity";
@@ -97,4 +98,12 @@ test("session pacing keeps the tutor working toward a 30-minute target", () => {
   assert.match(sessionPacingUpdate(25 * 60), /target has not yet been reached/);
   assert.match(sessionPacingUpdate(30 * 60), /ask whether the learner wants to stop or continue/);
   assert.match(sessionPacingUpdate(35 * 60), /do not end or disconnect on your own/);
+});
+
+test("API cost estimate includes cached and uncached gpt-6-luna tokens once", () => {
+  const usage = readResponseTokenUsage({ input_tokens: 1_000_000, input_tokens_details: { cached_tokens: 500_000 }, output_tokens: 100_000 });
+  assert.deepEqual(usage, { inputTokens: 1_000_000, cachedInputTokens: 500_000, outputTokens: 100_000 });
+  assert.equal(estimateResponseCostUsd("gpt-6-luna", usage!), 0.105);
+  assert.equal(estimateResponseCostUsd("unknown-model", usage!), null);
+  assert.equal(readResponseTokenUsage({ input_tokens: 2, input_tokens_details: { cached_tokens: 3 }, output_tokens: 1 }), null);
 });

@@ -1,4 +1,4 @@
-import { integer, jsonb, pgTable, serial, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
+import { integer, jsonb, numeric, pgTable, serial, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
 
 export const learnerProfile = pgTable("learner_profile", {
   id: integer("id").primaryKey().default(1),
@@ -51,7 +51,20 @@ export const practiceSessions = pgTable("practice_sessions", {
   summary: text("summary"),
   status: text("status").notNull().default("started"),
   progressCursor: integer("progress_cursor").notNull().default(0),
+  voiceSeconds: integer("voice_seconds").notNull().default(0),
 });
+
+export const apiUsageEvents = pgTable("api_usage_events", {
+  id: serial("id").primaryKey(),
+  sessionId: integer("session_id").notNull(),
+  responseId: text("response_id").notNull(),
+  model: text("model").notNull(),
+  inputTokens: integer("input_tokens").notNull(),
+  cachedInputTokens: integer("cached_input_tokens").notNull().default(0),
+  outputTokens: integer("output_tokens").notNull(),
+  estimatedCostUsd: numeric("estimated_cost_usd", { precision: 16, scale: 10 }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [uniqueIndex("api_usage_events_response_unique").on(table.responseId)]);
 
 export const ideaNotes = pgTable("idea_notes", {
   id: serial("id").primaryKey(),

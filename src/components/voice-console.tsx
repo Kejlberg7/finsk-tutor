@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { extractIdeaCues } from "@/lib/idea-cue";
+import { estimateResponseCostUsd, readResponseTokenUsage } from "@/lib/api-cost";
 import { sessionPacingUpdate } from "@/lib/session-pacing";
 import { shouldAutoResume } from "@/lib/session-continuity";
 import { formatDuration } from "@/lib/duration";
@@ -20,6 +21,7 @@ const EMPTY_LEARNING: LearningSnapshot = {
   dueWordCount: 0,
   completedSessionCount: 0,
   totalPracticeSeconds: 0,
+  estimatedApiCostUsd: 0,
   lastSummary: null,
 };
 
@@ -39,7 +41,11 @@ type LiveEvent = {
   start_ms?: number;
   end_ms?: number;
   error?: { message?: string };
-  event?: { type?: string };
+  event?: {
+    type?: string;
+    response?: { id?: unknown; model?: unknown; usage?: unknown };
+  };
+  usage?: { seconds?: number };
   reason?: string;
 };
 
@@ -80,6 +86,8 @@ export default function VoiceConsole() {
   const reconnectTimerRef = useRef<number | null>(null);
   const reconnectAttemptsRef = useRef(0);
   const connectedAtRef = useRef(0);
+  const lastVoiceUsageSecondsRef = useRef(0);
+  const savedVoiceUsageSecondsRef = useRef(0);
   const practiceStartedAtRef = useRef(0);
   const manualStopRef = useRef(false);
   const finishRef = useRef<((reason: string) => void) | null>(null);
@@ -122,6 +130,41 @@ export default function VoiceConsole() {
       if (response.ok) setIdeas(await response.json() as IdeaNote[]);
       setIdeasError("");
     } catch { setIdeasError("Kunne ikke hente idéer lige nu."); }
+  }
+
+  async function saveVoiceUsage(seconds: number) {
+    const sessionId = appSessionIdRef.current;
+    const totalSeconds = Math.floor(seconds);
+    if (!sessionId || !Number.isFinite(totalSeconds) || totalSeconds < 0
+      || totalSeconds <= savedVoiceUsageSecondsRef.current) return;
+    try {
+      const response = await fetch("/api/session/usage", {
+        method: "PATCH",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId, seconds: totalSeconds }),
+      });
+      if (!response.ok) throw new Error("Kunne ikke gemme API-forbruget.");
+      savedVoiceUsageSecondsRef.current = totalSeconds;
+    } catch {
+      // The final usage snapshot is attempted again when the session closes.
+    }
+  }
+
+  async function saveResponseUsage(responseUsage: { responseId: string; model: string; usage: unknown }) {
+    const sessionId = appSessionIdRef.current;
+    const usage = readResponseTokenUsage(responseUsage.usage);
+    if (!sessionId || !usage || estimateResponseCostUsd(responseUsage.model, usage) === null) return;
+    try {
+      await fetch("/api/session/usage", {
+        method: "PATCH",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId, responseUsage }),
+      });
+    } catch {
+      // Usage is also recorded for the tutor's server-side analysis responses.
+    }
   }
 
   useEffect(() => {
@@ -334,6 +377,8 @@ export default function VoiceConsole() {
       manualStopRef.current = false;
       reconnectAttemptsRef.current = 0;
       practiceStartedAtRef.current = 0;
+      lastVoiceUsageSecondsRef.current = 0;
+      savedVoiceUsageSecondsRef.current = 0;
       notedFeedbackRef.current.clear();
       setTranscript([]);
       transcriptRef.current = [];
@@ -372,7 +417,7 @@ export default function VoiceConsole() {
         const context = transcriptRef.current.length ? [...transcriptRef.current] : resumeTranscript;
         const recover = shouldAutoResume(reason, manualStopRef.current);
         if (recover && Date.now() - connectedAtRef.current > 60_000) reconnectAttemptsRef.current = 0;
-        void saveSession(recover);
+        void saveVoiceUsage(lastVoiceUsageSecondsRef.current).finally(() => saveSession(recover));
         closeConnection();
         if (recover) scheduleReconnect(context);
         else if (!manualStopRef.current && reason !== "close_requested") {
@@ -410,9 +455,21 @@ export default function VoiceConsole() {
         if (event.type === "response.event" && ["response.completed", "response.failed", "response.incomplete"].includes(event.event?.type ?? "")) {
           setStatus("Forbundet — tal bare.");
         }
+        const completedResponse = event.event?.response;
+        if (event.type === "response.event" && event.event?.type === "response.completed"
+          && typeof completedResponse?.id === "string" && typeof completedResponse.model === "string") {
+          void saveResponseUsage({ responseId: completedResponse.id, model: completedResponse.model, usage: completedResponse.usage });
+        }
+        if (event.type === "session.usage.updated" && typeof event.usage?.seconds === "number") {
+          lastVoiceUsageSecondsRef.current = Math.max(lastVoiceUsageSecondsRef.current, event.usage.seconds);
+          if (lastVoiceUsageSecondsRef.current - savedVoiceUsageSecondsRef.current >= 60) {
+            void saveVoiceUsage(lastVoiceUsageSecondsRef.current);
+          }
+        }
         if (event.type === "session.closed") {
           void flushIdea();
-          finish(event.reason ?? "connection_lost");
+          if (typeof event.usage?.seconds === "number") lastVoiceUsageSecondsRef.current = Math.max(lastVoiceUsageSecondsRef.current, event.usage.seconds);
+          void saveVoiceUsage(lastVoiceUsageSecondsRef.current).finally(() => finish(event.reason ?? "connection_lost"));
         }
         if (event.type === "session.input_transcript.delta") updateTranscript("dig", event);
         if (event.type === "session.output_transcript.delta") updateTranscript("tutor", event);
@@ -446,6 +503,8 @@ export default function VoiceConsole() {
       if (!result.transport?.sdp) throw new Error("OpenAI returnerede ikke et SDP-svar.");
       if (manualStopRef.current || unmountedRef.current) throw new Error("Samtalen blev afbrudt under opstart.");
       appSessionIdRef.current = result.app_session_id ?? null;
+      lastVoiceUsageSecondsRef.current = 0;
+      savedVoiceUsageSecondsRef.current = 0;
       if (result.learning) setLearning(result.learning);
       await peer.setRemoteDescription({ type: "answer", sdp: result.transport.sdp });
       connectedAtRef.current = Date.now();
@@ -471,7 +530,7 @@ export default function VoiceConsole() {
       sendEvent({ type: "session.close" });
       closeTimerRef.current = window.setTimeout(() => {
         finishRef.current?.("close_requested");
-      }, 2500);
+      }, 8_000);
       return;
     }
     if (finishRef.current) finishRef.current("close_requested");
@@ -622,6 +681,7 @@ export default function VoiceConsole() {
             <div className="stat-card"><span className="stat-icon peach" aria-hidden="true">↺</span><strong>{learning.dueWordCount}</strong><span>Klar til repetition</span></div>
             <div className="stat-card"><span className="stat-icon blue" aria-hidden="true">◉</span><strong>{learning.completedSessionCount}</strong><span>Gemte samtaler</span></div>
             <div className="stat-card time-stat"><span className="stat-icon blue" aria-hidden="true">◷</span><strong>{formatDuration(learning.totalPracticeSeconds)}</strong><span>Samlet samtaletid</span><small>Beregnet fra gemte øveture</small></div>
+            <div className="stat-card time-stat"><span className="stat-icon peach" aria-hidden="true">$</span><strong>{formatUsd(learning.estimatedApiCostUsd)}</strong><span>Estimeret API-forbrug</span><small>GPT-Live-tale estimeret · baggrundskald målt fra nu</small></div>
           </div>
 
           <div className="detail-grid">
@@ -742,6 +802,10 @@ function apiErrorMessage(payload: unknown): string {
 
 function formatDate(value: string): string {
   return new Intl.DateTimeFormat("da-DK", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }).format(new Date(value));
+}
+
+function formatUsd(value: number): string {
+  return new Intl.NumberFormat("da-DK", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 4 }).format(value);
 }
 
 function formatShortDate(value: string): string {

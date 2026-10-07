@@ -95,13 +95,29 @@ async function createSchema(): Promise<void> {
       transcript jsonb,
       summary text,
       status text NOT NULL DEFAULT 'started',
-      progress_cursor integer NOT NULL DEFAULT 0
+      progress_cursor integer NOT NULL DEFAULT 0,
+      voice_seconds integer NOT NULL DEFAULT 0
     )
   `);
   await sqlClient.unsafe(`ALTER TABLE practice_sessions ADD COLUMN IF NOT EXISTS live_session_id text`);
   await sqlClient.unsafe(`ALTER TABLE practice_sessions ADD COLUMN IF NOT EXISTS transcript jsonb`);
   await sqlClient.unsafe(`ALTER TABLE practice_sessions ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'started'`);
   await sqlClient.unsafe(`ALTER TABLE practice_sessions ADD COLUMN IF NOT EXISTS progress_cursor integer NOT NULL DEFAULT 0`);
+  await sqlClient.unsafe(`ALTER TABLE practice_sessions ADD COLUMN IF NOT EXISTS voice_seconds integer NOT NULL DEFAULT 0`);
+  await sqlClient.unsafe(`
+    CREATE TABLE IF NOT EXISTS api_usage_events (
+      id serial PRIMARY KEY,
+      session_id integer NOT NULL,
+      response_id text NOT NULL,
+      model text NOT NULL,
+      input_tokens integer NOT NULL,
+      cached_input_tokens integer NOT NULL DEFAULT 0,
+      output_tokens integer NOT NULL,
+      estimated_cost_usd numeric(16, 10) NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now()
+    )
+  `);
+  await sqlClient.unsafe(`CREATE UNIQUE INDEX IF NOT EXISTS api_usage_events_response_unique ON api_usage_events (response_id)`);
   await sqlClient.unsafe(`
     CREATE TABLE IF NOT EXISTS idea_notes (
       id serial PRIMARY KEY,

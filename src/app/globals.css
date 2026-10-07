@@ -131,6 +131,7 @@ button:disabled { cursor: not-allowed; opacity: 0.52; }
 .stat-card strong { margin-top: 11px; font-size: 2rem; line-height: 1; letter-spacing: -0.055em; }
 .stat-card > span:last-child { margin-top: 5px; color: var(--muted); font-size: 0.8rem; font-weight: 650; }
 .stat-card > small { margin-top: 4px; color: var(--muted); font-size: 0.69rem; line-height: 1.35; }
+.time-stat > span:not(.stat-icon) { margin-top: 5px; color: var(--muted); font-size: 0.8rem; font-weight: 650; }
 .time-stat strong { font-size: clamp(1.35rem, 2.2vw, 1.8rem); white-space: nowrap; }
 
 .detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
