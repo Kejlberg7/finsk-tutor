@@ -746,11 +746,12 @@ export default function VoiceConsole() {
             <section className="archive-card" aria-labelledby="history-title">
               <span className="card-kicker">DIN HISTORIK</span>
               <h3 id="history-title">Seneste samtaler</h3>
+              <p className="archive-help">Varighed og pris er estimater i USD. GPT-Live-tale beregnes fra sessionstid; baggrundskald måles fra den nye registrering og frem.</p>
               {historyError ? <p className="empty-copy">{historyError}</p> : history.length ? (
                 <div className="archive-list">
                   {history.map((session) => (
                     <details className="archive-item" key={session.id}>
-                      <summary><span><strong>{formatDate(session.startedAt)}</strong><small>{session.status === "completed" ? "Gemt samtale" : "Delvist gemt"}</small></span><span className="archive-arrow" aria-hidden="true">⌄</span></summary>
+                      <summary><span><strong>{formatDate(session.startedAt)}</strong><small>{formatDuration(session.durationSeconds)} · ca. {formatUsd(session.estimatedApiCostUsd)} · {session.status === "completed" ? "Gemt samtale" : "Delvist gemt"}</small></span><span className="archive-arrow" aria-hidden="true">⌄</span></summary>
                       <p>{session.summary ?? "Ingen opsummering endnu. Du kan stadig læse samtalen herunder."}</p>
                       <div className="archive-transcript">
                         {session.transcript.map((line, index) => <div className="archive-line" key={`${session.id}-${index}`}><strong>{line.speaker === "dig" ? "Dig" : "Tutor"}</strong><span>{line.text}</span></div>)}

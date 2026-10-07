@@ -42,6 +42,8 @@ export type RecentSession = {
   id: number;
   startedAt: string;
   endedAt: string | null;
+  durationSeconds: number;
+  estimatedApiCostUsd: number;
   summary: string | null;
   status: string;
   transcript: TranscriptLine[];
