@@ -12,9 +12,12 @@ export type DueWord = {
 };
 
 export type WordProgress = DueWord & {
+  danish: string | null;
+  example: string | null;
   correctCount: number;
   incorrectCount: number;
   lastFeedback: string | null;
+  lastSeenAt: string | null;
   nextReviewAt: string | null;
 };
 

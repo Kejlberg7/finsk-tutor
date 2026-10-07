@@ -150,14 +150,31 @@ button:disabled { cursor: not-allowed; opacity: 0.52; }
 .details-arrow { display: grid; place-items: center; flex: none; width: 37px; height: 37px; border-radius: 12px; background: var(--accent-soft); color: var(--accent); font-size: 1.2rem; transition: transform 0.2s ease; }
 .word-progress[open] .details-arrow { transform: rotate(90deg); }
 .word-progress-note { margin: 0 24px 17px; color: var(--muted); font-size: 0.84rem; line-height: 1.45; }
+.word-progress-controls { display: grid; gap: 14px; padding: 0 24px 18px; }
+.word-filter-list { display: flex; flex-wrap: wrap; gap: 7px; }
+.word-filter { display: inline-flex; align-items: center; gap: 7px; padding: 8px 11px; border: 1px solid var(--rule); border-radius: 999px; background: white; color: var(--muted); font-size: 0.78rem; font-weight: 700; cursor: pointer; }
+.word-filter span { display: grid; place-items: center; min-width: 21px; height: 21px; padding: 0 5px; border-radius: 999px; background: #f0f3ef; color: var(--ink); font-size: 0.7rem; }
+.word-filter.active { border-color: #9fbba4; background: #edf5ed; color: var(--accent); }
+.word-filter.active span { background: white; color: var(--accent); }
+.word-search-label { display: grid; gap: 6px; color: var(--muted); font-size: 0.76rem; font-weight: 700; }
+.word-search-label input { width: 100%; min-height: 42px; padding: 0 12px; border: 1px solid var(--rule); border-radius: 11px; background: white; color: var(--ink); font: inherit; font-size: 0.86rem; }
 .word-progress ul { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 0; padding: 0 24px 24px; list-style: none; }
 .word-progress li { padding: 15px; border: 1px solid var(--rule); border-radius: 14px; background: #fafcf9; }
 .word-progress-heading { display: flex; align-items: start; justify-content: space-between; gap: 10px; }
 .word-progress-heading span { display: block; color: var(--muted); font-size: 0.83rem; }
+.word-progress-heading .word-english { margin-top: 3px; }
 .progress-track { height: 7px; overflow: hidden; margin: 12px 0 7px; border-radius: 999px; background: #e4eee4; }
 .progress-track > span { display: block; height: 100%; border-radius: inherit; background: #6baa73; }
 .word-progress li small { color: var(--muted); }
+.word-status-list { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 7px; }
+.word-status { display: inline-flex; align-items: center; padding: 4px 8px; border-radius: 999px; font-size: 0.67rem; font-weight: 750; }
+.word-status.secure { background: #eaf4e8; color: #286b42; }
+.word-status.learning { background: #f0f2ee; color: #5d6b60; }
+.word-status.due { background: #fff1df; color: #895a16; }
+.word-next-review { display: block; margin-top: 3px; }
 .word-feedback { margin: 8px 0 0; font-size: 0.83rem; line-height: 1.4; }
+.word-example { margin: 8px 0 0; color: #53665b; font-size: 0.81rem; font-style: italic; line-height: 1.45; }
+.word-filter-empty { padding: 0 24px 24px; }
 .word-progress > .empty-copy { margin: 0; padding: 0 24px 24px; }
 
 .archive-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 18px; }
@@ -242,6 +259,7 @@ button:disabled { cursor: not-allowed; opacity: 0.52; }
   .stat-card { min-height: 131px; padding: 15px; }
   .stat-card strong { font-size: 1.7rem; }
   .word-progress ul { grid-template-columns: 1fr; padding: 0 17px 17px; }
+  .word-progress-controls { padding: 0 17px 16px; }
   .word-progress summary { padding: 18px; }
   .word-progress-note { margin: 0 18px 15px; }
 }

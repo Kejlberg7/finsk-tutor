@@ -62,15 +62,17 @@ export async function getLearningSnapshot(): Promise<LearningSnapshot> {
         .select({
           finnish: vocabulary.finnish,
           english: vocabulary.english,
+          danish: vocabulary.danish,
+          example: vocabulary.example,
           mastery: vocabulary.mastery,
           correctCount: vocabulary.correctCount,
           incorrectCount: vocabulary.incorrectCount,
           lastFeedback: vocabulary.lastFeedback,
+          lastSeenAt: vocabulary.lastSeenAt,
           nextReviewAt: vocabulary.nextReviewAt,
         })
         .from(vocabulary)
-        .orderBy(asc(vocabulary.mastery), desc(vocabulary.incorrectCount), asc(vocabulary.nextReviewAt))
-        .limit(100),
+        .orderBy(asc(vocabulary.mastery), desc(vocabulary.incorrectCount), asc(vocabulary.nextReviewAt)),
       db.select({ value: count() }).from(vocabulary),
       db.select({ value: count() }).from(vocabulary).where(gte(vocabulary.mastery, 4)),
       db.select({ value: count() }).from(vocabulary)
@@ -98,6 +100,7 @@ export async function getLearningSnapshot(): Promise<LearningSnapshot> {
       dueWords: due,
       wordProgress: words.map((word) => ({
         ...word,
+        lastSeenAt: word.lastSeenAt?.toISOString() ?? null,
         nextReviewAt: word.nextReviewAt?.toISOString() ?? null,
       })),
       knownWordCount: totals[0]?.value ?? 0,

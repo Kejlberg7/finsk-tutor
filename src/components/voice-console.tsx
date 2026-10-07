@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { extractIdeaCues } from "@/lib/idea-cue";
 import { shouldAutoResume } from "@/lib/session-continuity";
-import type { IdeaNote, LearningSnapshot, RecentSession, TranscriptLine } from "@/lib/learning-types";
+import type { IdeaNote, LearningSnapshot, RecentSession, TranscriptLine, WordProgress } from "@/lib/learning-types";
 
 const EMPTY_LEARNING: LearningSnapshot = {
   memoryReady: false,
@@ -40,6 +40,8 @@ type LiveEvent = {
   reason?: string;
 };
 
+type WordFilter = "all" | "secure" | "due" | "learning";
+
 export default function VoiceConsole() {
   const [status, setStatus] = useState("Klar til en samtale.");
   const [transcript, setTranscript] = useState<TranscriptLine[]>([]);
@@ -48,6 +50,8 @@ export default function VoiceConsole() {
   const [ideas, setIdeas] = useState<IdeaNote[]>([]);
   const [historyError, setHistoryError] = useState("");
   const [ideasError, setIdeasError] = useState("");
+  const [wordFilter, setWordFilter] = useState<WordFilter>("all");
+  const [wordSearch, setWordSearch] = useState("");
   const [progressMessage, setProgressMessage] = useState("Ordstatus opdateres under samtalen.");
   const [ideaMessage, setIdeaMessage] = useState("");
   const [active, setActive] = useState(false);
@@ -80,6 +84,23 @@ export default function VoiceConsole() {
     ?? Math.ceil((learning.masteredWordCount + 1) / 100) * 100;
   const milestonePercent = Math.min(100, Math.round((learning.masteredWordCount / nextGoal) * 100));
   const levelCode = learning.level.match(/\b(A0|A1|A2|B1|B2|C1|C2)\b/i)?.[1]?.toUpperCase();
+  const wordFilterCounts: Record<WordFilter, number> = {
+    all: learning.knownWordCount,
+    secure: learning.masteredWordCount,
+    due: learning.dueWordCount,
+    learning: Math.max(0, learning.knownWordCount - learning.masteredWordCount),
+  };
+  const filteredWords = learning.wordProgress.filter((word) => {
+    const due = isWordDue(word);
+    const matchesFilter = wordFilter === "all"
+      || (wordFilter === "secure" && word.mastery >= 4)
+      || (wordFilter === "due" && due)
+      || (wordFilter === "learning" && word.mastery < 4);
+    const query = wordSearch.trim().toLocaleLowerCase("da-DK");
+    const matchesSearch = !query || [word.finnish, word.english, word.danish, word.example]
+      .some((value) => value?.toLocaleLowerCase("da-DK").includes(query));
+    return matchesFilter && matchesSearch;
+  });
 
   async function refreshHistory() {
     try {
@@ -610,19 +631,44 @@ export default function VoiceConsole() {
           </div>
 
           <details className="word-progress">
-            <summary><span><span className="card-kicker">ORD FOR ORD</span><strong>Se dine fremskridt</strong><small>Øveniveau, forsøg og rettelser</small></span><span className="details-arrow" aria-hidden="true">↗</span></summary>
-            <p className="word-progress-note">Procenterne bygger på øvede ord og tydelige rettelser. De er ikke en måling af din accent eller et officielt sprogniveau.</p>
+            <summary><span><span className="card-kicker">ORD FOR ORD</span><strong>Ordoversigt · {learning.knownWordCount} mødt</strong><small>Se status, oversættelser, forsøg og repetitionsdato for hvert ord</small></span><span className="details-arrow" aria-hidden="true">↗</span></summary>
+            <p className="word-progress-note">“Sikker” betyder øveniveau 4/5 eller 5/5. “Klar til repetition” følger næste repetitionsdato. Et ord kan godt være sikkert og samtidig være klar til en senere repetition.</p>
             {learning.wordProgress?.length ? (
-              <ul>
-                {learning.wordProgress.map((word) => (
+              <>
+                <div className="word-progress-controls">
+                  <div className="word-filter-list" role="group" aria-label="Filtrér ord efter status">
+                    {([
+                      ["all", "Alle mødt"],
+                      ["secure", "Sikre"],
+                      ["due", "Klar til repetition"],
+                      ["learning", "Under opbygning"],
+                    ] as const).map(([filter, label]) => (
+                      <button className={wordFilter === filter ? "word-filter active" : "word-filter"} type="button" key={filter} aria-pressed={wordFilter === filter} onClick={() => setWordFilter(filter)}>
+                        {label} <span>{wordFilterCounts[filter]}</span>
+                      </button>
+                    ))}
+                  </div>
+                  <label className="word-search-label">Find et ord
+                    <input type="search" value={wordSearch} onChange={(event) => setWordSearch(event.target.value)} placeholder="Finsk eller dansk/engelsk" />
+                  </label>
+                </div>
+                {filteredWords.length ? <ul>
+                {filteredWords.map((word) => (
                   <li key={word.finnish}>
-                    <div className="word-progress-heading"><div><strong lang="fi">{word.finnish}</strong><span>{word.english}</span></div><strong>{word.mastery * 20}%</strong></div>
+                    <div className="word-progress-heading"><div><strong lang="fi">{word.finnish}</strong><span>{word.danish || word.english}</span>{word.danish && word.english && word.danish !== word.english ? <small className="word-english">Engelsk: {word.english}</small> : null}</div><strong>{word.mastery * 20}%</strong></div>
                     <div className="progress-track" role="progressbar" aria-label={`Øveniveau for ${word.finnish}`} aria-valuenow={word.mastery * 20} aria-valuemin={0} aria-valuemax={100}><span style={{ width: `${word.mastery * 20}%` }} /></div>
-                    <small>{word.correctCount} tydeligt rigtige · {word.incorrectCount} rettet</small>
+                    <div className="word-status-list">
+                      <span className={word.mastery >= 4 ? "word-status secure" : "word-status learning"}>{word.mastery >= 4 ? "Sikkert" : "Under opbygning"}</span>
+                      {isWordDue(word) ? <span className="word-status due">Klar til repetition</span> : null}
+                    </div>
+                    <small>{word.correctCount} rigtige · {word.incorrectCount} rettet{word.lastSeenAt ? ` · Øvet ${formatShortDate(word.lastSeenAt)}` : ""}</small>
+                    {!isWordDue(word) && word.nextReviewAt ? <small className="word-next-review">Næste repetition {formatShortDate(word.nextReviewAt)}</small> : null}
                     {word.lastFeedback ? <p className="word-feedback">Seneste rettelse: {word.lastFeedback}</p> : null}
+                    {word.example ? <p className="word-example" lang="fi">{word.example}</p> : null}
                   </li>
                 ))}
-              </ul>
+                </ul> : <p className="empty-copy word-filter-empty">Ingen ord matcher det filter eller den søgning.</p>}
+              </>
             ) : <p className="empty-copy">Ord og fremskridt vises her efter din første gemte øvesamtale.</p>}
           </details>
 
@@ -686,6 +732,14 @@ function apiErrorMessage(payload: unknown): string {
 
 function formatDate(value: string): string {
   return new Intl.DateTimeFormat("da-DK", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }).format(new Date(value));
+}
+
+function formatShortDate(value: string): string {
+  return new Intl.DateTimeFormat("da-DK", { day: "numeric", month: "short" }).format(new Date(value));
+}
+
+function isWordDue(word: WordProgress): boolean {
+  return !word.nextReviewAt || new Date(word.nextReviewAt).getTime() <= Date.now();
 }
 
 function safeLiveEvent(value: unknown): LiveEvent | null {
