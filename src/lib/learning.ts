@@ -1,5 +1,5 @@
 import "server-only";
-import { and, asc, count, desc, eq, gte, isNotNull, isNull, lte, or } from "drizzle-orm";
+import { and, asc, count, desc, eq, gte, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
 import { ensureDatabaseSchema, getDatabase, isDatabaseConfigured } from "@/db";
 import { grammarSkills, learnerProfile, practiceSessions, vocabulary } from "@/db/schema";
 import type { LearningSnapshot, TranscriptLine } from "@/lib/learning-types";
@@ -17,6 +17,7 @@ const DEFAULT_SNAPSHOT: LearningSnapshot = {
   masteredWordCount: 0,
   dueWordCount: 0,
   completedSessionCount: 0,
+  totalPracticeSeconds: 0,
   lastSummary: null,
 };
 
@@ -50,7 +51,7 @@ export async function getLearningSnapshot(): Promise<LearningSnapshot> {
     await ensureDatabaseSchema();
     const db = getDatabase();
     const now = new Date();
-    const [profiles, due, words, totals, mastered, dueTotal, completed, recentSessions] = await Promise.all([
+    const [profiles, due, words, totals, mastered, dueTotal, completed, practiceTime, recentSessions] = await Promise.all([
       db.select().from(learnerProfile).where(eq(learnerProfile.id, 1)).limit(1),
       db
         .select({ finnish: vocabulary.finnish, english: vocabulary.english, mastery: vocabulary.mastery })
@@ -79,6 +80,9 @@ export async function getLearningSnapshot(): Promise<LearningSnapshot> {
         .where(or(isNull(vocabulary.nextReviewAt), lte(vocabulary.nextReviewAt, now))),
       db.select({ value: count() }).from(practiceSessions)
         .where(eq(practiceSessions.status, "completed")),
+      db.select({ value: sql<string>`COALESCE(SUM(GREATEST(0, EXTRACT(EPOCH FROM (${practiceSessions.endedAt} - ${practiceSessions.startedAt})))), 0)` })
+        .from(practiceSessions)
+        .where(and(isNotNull(practiceSessions.endedAt), isNotNull(practiceSessions.transcript))),
       db
         .select({ summary: practiceSessions.summary })
         .from(practiceSessions)
@@ -107,6 +111,7 @@ export async function getLearningSnapshot(): Promise<LearningSnapshot> {
       masteredWordCount: mastered[0]?.value ?? 0,
       dueWordCount: dueTotal[0]?.value ?? 0,
       completedSessionCount: completed[0]?.value ?? 0,
+      totalPracticeSeconds: Math.floor(Number(practiceTime[0]?.value ?? 0)),
       lastSummary: recentSessions[0]?.summary ?? null,
     };
   } catch (error) {

@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { extractIdeaCues } from "@/lib/idea-cue";
 import { shouldAutoResume } from "@/lib/session-continuity";
+import { formatDuration } from "@/lib/duration";
 import type { IdeaNote, LearningSnapshot, RecentSession, TranscriptLine, WordProgress } from "@/lib/learning-types";
 
 const EMPTY_LEARNING: LearningSnapshot = {
@@ -17,6 +18,7 @@ const EMPTY_LEARNING: LearningSnapshot = {
   masteredWordCount: 0,
   dueWordCount: 0,
   completedSessionCount: 0,
+  totalPracticeSeconds: 0,
   lastSummary: null,
 };
 
@@ -612,6 +614,7 @@ export default function VoiceConsole() {
             <div className="stat-card"><span className="stat-icon lime" aria-hidden="true">✓</span><strong>{learning.masteredWordCount}</strong><span>Sikre ord</span></div>
             <div className="stat-card"><span className="stat-icon peach" aria-hidden="true">↺</span><strong>{learning.dueWordCount}</strong><span>Klar til repetition</span></div>
             <div className="stat-card"><span className="stat-icon blue" aria-hidden="true">◉</span><strong>{learning.completedSessionCount}</strong><span>Gemte samtaler</span></div>
+            <div className="stat-card time-stat"><span className="stat-icon blue" aria-hidden="true">◷</span><strong>{formatDuration(learning.totalPracticeSeconds)}</strong><span>Samlet samtaletid</span><small>Beregnet fra gemte øveture</small></div>
           </div>
 
           <div className="detail-grid">

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { extractIdeaCue, extractIdeaCues } from "../src/lib/idea-cue";
+import { formatDuration } from "../src/lib/duration";
 import { buildResumeInput, shouldAutoResume } from "../src/lib/session-continuity";
 import { cleanFragments, compactTranscript, completedTurnCutoff } from "../src/lib/transcript";
 import type { TranscriptLine } from "../src/lib/learning-types";
@@ -80,4 +81,12 @@ test("transcript fragments combine without dropping speech", () => {
 test("checkpoint cursor input rejects malformed fragments", () => {
   assert.throws(() => cleanFragments([{ speaker: "dig", text: "ok" }, { speaker: "other", text: "bad" }]));
   assert.equal(cleanFragments([{ speaker: "dig", text: "kiitos" }]).length, 1);
+});
+
+test("practice time is displayed as minutes and hours", () => {
+  assert.equal(formatDuration(0), "0 min");
+  assert.equal(formatDuration(59 * 60), "59 min");
+  assert.equal(formatDuration(60 * 60), "1 t");
+  assert.equal(formatDuration(2 * 60 * 60 + 17 * 60), "2 t 17 min");
+  assert.equal(formatDuration(-30), "0 min");
 });

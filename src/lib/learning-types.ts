@@ -33,6 +33,7 @@ export type LearningSnapshot = {
   masteredWordCount: number;
   dueWordCount: number;
   completedSessionCount: number;
+  totalPracticeSeconds: number;
   lastSummary: string | null;
 };
 
