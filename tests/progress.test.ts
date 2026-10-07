@@ -30,6 +30,11 @@ test("natural note-to-self wording and learning requests are saved without a mag
     content: "Træn begge retninger: Jeg skal både formulere ting på finsk og oversætte det, tutoren siger på finsk, til dansk, så øvelsen tester min forståelse.",
     explicit: false,
   });
+  assert.deepEqual(extractIdeaCue("Endnu en note senere er at, nogle gange må en ny dag gerne bare være at øve alle de gamle ting, vi har haft, så det ikke altid bliver nye ord."), {
+    kind: "correction",
+    content: "nogle gange må en ny dag gerne bare være at øve alle de gamle ting, vi har haft, så det ikke altid bliver nye ord.",
+    explicit: true,
+  });
 });
 
 test("an interrupted lesson resumes with bounded recent history", () => {

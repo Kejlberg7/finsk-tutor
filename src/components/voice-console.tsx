@@ -648,7 +648,7 @@ export default function VoiceConsole() {
             <section className="archive-card" aria-labelledby="ideas-title">
               <span className="card-kicker">TIL SENERE</span>
               <h3 id="ideas-title">Idéer og rettelser</h3>
-              <p className="archive-help">Sig <strong>“Notér idé: …”</strong> eller <strong>“Notér rettelse: …”</strong>. Tydeligt beskrevne problemer med appen kan også blive gemt automatisk. Tjek altid listen bagefter.</p>
+              <p className="archive-help">Du kan sige en idé eller rettelse til senere med dine egne ord. Tydeligt beskrevne ønsker og problemer med appen kan blive gemt automatisk.</p>
               {ideaMessage ? <p className="idea-message" role="status">{ideaMessage}</p> : null}
               {ideasError ? <p className="empty-copy">{ideasError}</p> : ideas.length ? (
                 <ul className="idea-list">

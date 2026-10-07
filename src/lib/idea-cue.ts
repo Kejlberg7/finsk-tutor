@@ -3,7 +3,7 @@ export type IdeaCue = { kind: "idea" | "correction"; content: string; explicit: 
 /** Keep automatic notes narrow: ordinary Finnish mistakes are lesson material, not app bugs. */
 export function extractIdeaCues(utterance: string): IdeaCue[] {
   const text = utterance.trim();
-  const laterNote = text.match(/(?:^|[.!?]\s*)(?:det\s+(?:er\s+)?(?:en\s+)?)?note\s+til\s+senere\s*[:,-]?\s*(.+)$/i);
+  const laterNote = text.match(/(?:^|[.!?]\s*)(?:(?:det\s+(?:er\s+)?|endnu\s+en\s+)?note\s+(?:til\s+)?senere)(?:\s+er)?\s*(?:at\s*)?[:,.-]?\s*(.+)$/i);
   if (laterNote) {
     const content = laterNote[1].trim().replace(/^[\s.,!?;:-]+/, "").slice(0, 1_500);
     if (content.length >= 5) return [{ kind: "correction", content, explicit: true }];
