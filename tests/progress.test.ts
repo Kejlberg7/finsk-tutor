@@ -94,8 +94,9 @@ test("practice time is displayed as minutes and hours", () => {
 });
 
 test("session pacing keeps the tutor working toward a 30-minute target", () => {
-  assert.match(sessionPacingUpdate(12 * 60), /do not wrap up or say the lesson is finished/);
+  assert.match(sessionPacingUpdate(12 * 60), /do not suggest a pause/);
   assert.match(sessionPacingUpdate(25 * 60), /target has not yet been reached/);
+  assert.match(sessionPacingUpdate(25 * 60), /unless the learner explicitly asks to stop or pause/);
   assert.match(sessionPacingUpdate(30 * 60), /ask whether the learner wants to stop or continue/);
   assert.match(sessionPacingUpdate(35 * 60), /do not end or disconnect on your own/);
 });

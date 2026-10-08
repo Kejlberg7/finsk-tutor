@@ -5,7 +5,7 @@ export function sessionPacingUpdate(elapsedSeconds: number): string {
     return `Elapsed practice time: about ${elapsedMinutes} minutes. The 30-minute target has been reached. Briefly acknowledge that, then ask whether the learner wants to stop or continue; do not end or disconnect on your own. If they continue, start another useful block.`;
   }
   if (elapsedMinutes >= 24) {
-    return `Elapsed practice time: about ${elapsedMinutes} minutes. The 30-minute target has not yet been reached. Continue teaching; use connected mixed retrieval and review in these final minutes, and do not say the lesson is finished.`;
+    return `Elapsed practice time: about ${elapsedMinutes} minutes. The 30-minute target has not yet been reached. Continue teaching; use connected mixed retrieval and review in these final minutes. Do not suggest a pause, say the lesson is finished, or start wrapping up unless the learner explicitly asks to stop or pause.`;
   }
-  return `Elapsed practice time: about ${elapsedMinutes} minutes. Keep the 30-minute target in mind. Continue directly into the next connected lesson block; do not wrap up or say the lesson is finished.`;
+  return `Elapsed practice time: about ${elapsedMinutes} minutes. Keep the 30-minute target in mind. Continue directly into the next connected lesson block; do not suggest a pause, wrap up, or say the lesson is finished unless the learner explicitly asks to stop or pause.`;
 }
