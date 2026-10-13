@@ -64,6 +64,8 @@ button:disabled { cursor: not-allowed; opacity: 0.52; }
 .secondary { background: var(--accent-soft); color: var(--accent); }
 .danger { background: rgb(255 255 255 / 11%); color: white; border: 1px solid rgb(255 255 255 / 22%); }
 .play-symbol { font-size: 0.8rem; }
+.stats-entry { text-decoration: none; }
+.stats-entry:hover { transform: translateY(-1px); }
 .session-status { display: flex; align-items: center; gap: 9px; min-height: 23px; margin-top: 17px; color: #d1e5d6; font-size: 0.84rem; }
 .live-progress { margin-top: 4px; color: #a9cdb0; font-size: 0.76rem; }
 .status-light { flex: none; width: 8px; height: 8px; border-radius: 50%; background: #9bb4a6; }
@@ -238,6 +240,7 @@ button:disabled { cursor: not-allowed; opacity: 0.52; }
   .hero-card p { font-size: 0.9rem; }
   .hero-actions { gap: 9px; margin-top: 23px; }
   .hero-actions button { min-height: 53px; flex: 1 1 100%; }
+  .hero-actions .stats-entry { min-height: 53px; flex: 1 1 100%; }
   .hero-actions .danger:disabled { display: none; }
   .audio-row { flex-direction: column; align-items: stretch; gap: 4px; padding: 9px 12px; }
   .audio-row > span { padding-left: 3px; }

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { extractIdeaCues } from "@/lib/idea-cue";
 import { estimateResponseCostUsd, readResponseTokenUsage } from "@/lib/api-cost";
 import { sessionPacingUpdate } from "@/lib/session-pacing";
@@ -697,6 +698,7 @@ export default function VoiceConsole() {
                 <span className="play-symbol" aria-hidden="true">▶</span>{connecting ? "Forbinder…" : recoveringRef.current ? "Genoptag samtale" : "Start samtale"}
               </button>
               <button className="danger" type="button" onClick={stop} disabled={!active && !connecting}>Stop og gem</button>
+              <Link className="secondary stats-entry" href="/statistik">Se din statistik <span aria-hidden="true">↗</span></Link>
             </div>
             <div className="session-status" role="status"><span className={active ? "status-light active" : "status-light"} aria-hidden="true" />{status}</div>
             <div className="live-progress" role="status">{progressMessage}</div>
