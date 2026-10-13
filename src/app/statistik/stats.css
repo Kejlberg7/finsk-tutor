@@ -164,10 +164,10 @@
   .insights-shell { padding: 15px 12px 42px; }
   .insights-nav { margin: 0 3px 14px; }
   .insights-back { padding: 9px 12px; font-size: .73rem; }
-  .insights-hero { align-items: start; min-height: 0; padding: 28px 23px 34px; border-radius: 22px; }
+  .insights-hero { align-items: stretch; flex-direction: column; gap: 0; min-height: 0; padding: 28px 23px 27px; border-radius: 22px; }
   .insights-hero h1 { font-size: clamp(2.4rem, 10.5vw, 3.7rem); }
   .insights-hero p { max-width: 29ch; font-size: .88rem; }
-  .insights-hero-ring { position: absolute; right: -47px; top: -48px; width: 150px; height: 150px; opacity: .52; }
+  .insights-hero-ring { position: relative; right: auto; top: auto; align-self: flex-end; width: 142px; height: 142px; margin-top: 20px; opacity: 1; }
   .insights-hero-ring > div { width: 80%; height: 80%; }
   .insights-hero-ring strong { font-size: 2rem; }
   .insights-hero-ring small { font-size: .8rem; }

@@ -22,9 +22,12 @@ export default async function StatsPage() {
   const building = words.filter((word) => word.mastery >= 2 && word.mastery < 4);
   const newWords = words.filter((word) => word.mastery < 2);
   const focusWords = [...words]
-    .filter((word) => word.incorrectCount > 0 || word.mastery < 4)
+    .filter((word) => word.mastery < 4)
     .sort((a, b) => (b.incorrectCount - a.incorrectCount) || (a.mastery - b.mastery))
     .slice(0, 5);
+  const practicedGrammar = data.grammar
+    .filter((skill) => skill.correctCount + skill.incorrectCount > 0)
+    .sort((a, b) => (b.incorrectCount - a.incorrectCount) || (b.correctCount - a.correctCount));
   const recentWins = [...secure]
     .sort((a, b) => (b.lastSeenAt ?? "").localeCompare(a.lastSeenAt ?? ""))
     .slice(0, 4);
@@ -174,13 +177,14 @@ export default async function StatsPage() {
           <section className="insights-panel insights-grammar" aria-labelledby="grammar-title">
             <span className="insights-kicker">OGSÅ GRAMMATIK TÆLLER</span>
             <h3 id="grammar-title">Grammatik i gang</h3>
-            {data.grammar.length ? <div className="insights-grammar-list">{data.grammar.slice(0, 5).map((skill) => (
+            <p className="insights-muted">{data.grammar.length} emner registreret · {practicedGrammar.length} med vurderede forsøg</p>
+            {practicedGrammar.length ? <div className="insights-grammar-list">{practicedGrammar.slice(0, 5).map((skill) => (
               <div key={skill.name} className="insights-grammar-item">
                 <div><strong>{skill.name}</strong><span>{skill.mastery}/5</span></div>
                 <span className="insights-grammar-track"><i style={{ width: `${Math.min(100, Math.max(0, skill.mastery * 20))}%` }} /></span>
               </div>
-            ))}</div> : <p className="insights-muted">Når tutoren registrerer et grammatikemne, kan du følge det her.</p>}
-            {data.grammar.length > 5 && <small className="insights-more">+ {data.grammar.length - 5} flere registrerede emner</small>}
+            ))}</div> : <p className="insights-muted">Ingen grammatikemner har vurderede forsøg endnu. Introducerede emner tæller ikke som mestrede.</p>}
+            {practicedGrammar.length > 5 && <small className="insights-more">+ {practicedGrammar.length - 5} flere øvede emner</small>}
           </section>
         </div>
 
