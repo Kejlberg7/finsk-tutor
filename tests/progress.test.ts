@@ -64,8 +64,10 @@ test("an interrupted lesson resumes with bounded recent history", () => {
   assert.equal(buildResumeInput([]).length, 0);
   assert.equal(shouldAutoResume("connection_lost", false), true);
   assert.equal(shouldAutoResume("expired", false), true);
+  assert.equal(shouldAutoResume("remote_hangup", false), true);
   assert.equal(shouldAutoResume("content", false), false);
   assert.equal(shouldAutoResume("connection_lost", true), false);
+  assert.equal(shouldAutoResume("remote_hangup", true), false);
 });
 
 test("checkpoints only score completed learner-and-tutor exchanges", () => {
