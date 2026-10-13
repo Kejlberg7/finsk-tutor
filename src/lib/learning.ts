@@ -82,7 +82,7 @@ export async function getLearningSnapshot(): Promise<LearningSnapshot> {
         .where(or(isNull(vocabulary.nextReviewAt), lte(vocabulary.nextReviewAt, now))),
       db.select({ value: count() }).from(practiceSessions)
         .where(eq(practiceSessions.status, "completed")),
-      db.select({ value: sql<string>`COALESCE(SUM(GREATEST(0, EXTRACT(EPOCH FROM (${practiceSessions.endedAt} - ${practiceSessions.startedAt})))), 0)` })
+      db.select({ value: sql<string>`COALESCE(SUM(CASE WHEN ${practiceSessions.voiceSeconds} > 0 THEN ${practiceSessions.voiceSeconds} ELSE FLOOR(GREATEST(0, EXTRACT(EPOCH FROM (${practiceSessions.endedAt} - ${practiceSessions.startedAt})))) END), 0)` })
         .from(practiceSessions)
         .where(and(isNotNull(practiceSessions.endedAt), isNotNull(practiceSessions.transcript))),
       db.select({ value: sql<string>`COALESCE(SUM(CASE WHEN ${practiceSessions.voiceSeconds} > 0 THEN ${practiceSessions.voiceSeconds} ELSE GREATEST(0, EXTRACT(EPOCH FROM (${practiceSessions.endedAt} - ${practiceSessions.startedAt}))) END), 0)` })

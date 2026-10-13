@@ -22,7 +22,7 @@ export default async function StatsPage() {
   const building = words.filter((word) => word.mastery >= 2 && word.mastery < 4);
   const newWords = words.filter((word) => word.mastery < 2);
   const focusWords = [...words]
-    .filter((word) => word.mastery < 4)
+    .filter((word) => word.mastery < 4 && word.incorrectCount > 0)
     .sort((a, b) => (b.incorrectCount - a.incorrectCount) || (a.mastery - b.mastery))
     .slice(0, 5);
   const practicedGrammar = data.grammar
@@ -158,7 +158,7 @@ export default async function StatsPage() {
           </section>
 
           <section className="insights-panel insights-focus" aria-labelledby="focus-title">
-            <div className="insights-panel-head"><div><span className="insights-kicker">ET GODT STED AT STARTE</span><h3 id="focus-title">Ord at holde fast i</h3></div><span className="insights-focus-spark" aria-hidden="true">✳</span></div>
+            <div className="insights-panel-head"><div><span className="insights-kicker">ET GODT STED AT STARTE</span><h3 id="focus-title">Udtryk at rette op på</h3></div><span className="insights-focus-spark" aria-hidden="true">✳</span></div>
             {focusWords.length ? <ol className="insights-focus-list">
               {focusWords.map((word) => <WordRow word={word} key={word.finnish} />)}
             </ol> : <p className="insights-muted">Ingen ord kræver ekstra fokus endnu. Start en samtale, så bygger vi listen sammen.</p>}
@@ -223,7 +223,7 @@ function Metric({ symbol, tone, value, label, note }: { symbol: string; tone: st
 }
 
 function WordRow({ word }: { word: WordProgress }) {
-  return <li><div><strong lang="fi">{word.finnish}</strong><span>{word.danish || word.english}</span></div><span className="insights-word-score">{word.mastery}/5</span><span className="insights-word-row-track"><i style={{ width: `${Math.min(100, Math.max(0, word.mastery * 20))}%` }} /></span></li>;
+  return <li><div><strong lang="fi">{word.finnish}</strong><span>{word.danish || word.english}</span>{word.lastFeedback && <small>Seneste rettelse: {word.lastFeedback}</small>}</div><span className="insights-word-score">{word.mastery}/5</span><span className="insights-word-row-track"><i style={{ width: `${Math.min(100, Math.max(0, word.mastery * 20))}%` }} /></span></li>;
 }
 
 function activityLevel(seconds: number): number {
