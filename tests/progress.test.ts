@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { extractIdeaCue, extractIdeaCues } from "../src/lib/idea-cue";
+import { isAuthorizedTutorReadRequest } from "../src/lib/tutor-read-api-auth";
 import { estimateResponseCostUsd, readResponseTokenUsage } from "../src/lib/api-cost";
 import { formatDuration } from "../src/lib/duration";
 import { sessionPacingUpdate } from "../src/lib/session-pacing";
@@ -20,6 +21,16 @@ test("explicit notes and clearly stated app problems are captured", () => {
   assert.equal(extractIdeaCue("Gentag det finske ord igen"), null);
   assert.equal(extractIdeaCue("Husk ordet kiitos"), null);
   assert.equal(extractIdeaCue("Jeg sagde töissä, men det skulle være töihin"), null);
+});
+
+test("assistant context API requires its dedicated bearer token", () => {
+  const token = "a".repeat(64);
+  assert.equal(isAuthorizedTutorReadRequest(`Bearer ${token}`, token), true);
+  assert.equal(isAuthorizedTutorReadRequest(`bearer ${token}`, token), true);
+  assert.equal(isAuthorizedTutorReadRequest(`Bearer ${"b".repeat(64)}`, token), false);
+  assert.equal(isAuthorizedTutorReadRequest(token, token), false);
+  assert.equal(isAuthorizedTutorReadRequest(`Bearer ${"a".repeat(39)}`, "a".repeat(39)), false);
+  assert.equal(isAuthorizedTutorReadRequest(`Bearer ${token}`, undefined), false);
 });
 
 test("natural note-to-self wording and learning requests are saved without a magic phrase", () => {
