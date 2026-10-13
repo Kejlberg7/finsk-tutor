@@ -113,7 +113,7 @@
 .insights-focus-list li > div { min-width: 0; }
 .insights-focus-list li > div strong { font-size: .94rem; overflow-wrap: anywhere; }
 .insights-focus-list li > div span { margin-top: 2px; color: var(--muted); font-size: .75rem; }
-.insights-focus-list li > div small { display: block; margin-top: 5px; color: #7a6341; font-size: .72rem; line-height: 1.45; }
+.insights-focus-list li > div small { display: block; margin-top: 5px; color: #8b998b; font-size: .7rem; line-height: 1.45; }
 .insights-word-score { align-self: start; color: #537c5d; font-size: .74rem; font-weight: 800; }
 .insights-word-row-track { grid-column: 1 / -1; height: 5px; overflow: hidden; border-radius: 9px; background: #e7eee5; }
 .insights-word-row-track i { display: block; height: 100%; border-radius: inherit; background: #7aaf85; }
