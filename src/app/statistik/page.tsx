@@ -46,7 +46,7 @@ export default async function StatsPage() {
             <span className="flag-mark" aria-hidden="true" />
             <span><strong>Finsk Tutor</strong><small>Din sprogrejse</small></span>
           </Link>
-          <Link className="insights-back" href="/">← Til samtalen</Link>
+          <Link className="insights-cta" href="/">Start samtale <span aria-hidden="true">↗</span></Link>
         </header>
 
         <section className="insights-hero" aria-labelledby="insights-title">
@@ -212,7 +212,6 @@ export default async function StatsPage() {
 
         <footer className="insights-footer">
           <div><span className="insights-kicker">NÆSTE SKRIDT</span><strong>{learning.nextLesson}</strong><p>Din plan ændrer sig, efterhånden som du øver.</p></div>
-          <Link href="/" className="insights-cta">Start en samtale <span aria-hidden="true">↗</span></Link>
         </footer>
       </div>
     </main>
