@@ -24,12 +24,14 @@ export function reportSessionDiagnostic(input: {
   message?: string | null; details?: DiagnosticDetails | null;
 }): void {
   if (typeof window === "undefined") return;
-  pending().push({
+  const event = parseDiagnosticEvent({
     id: crypto.randomUUID(), attemptId: input.attemptId, sessionId: input.sessionId ?? null,
     eventType: input.eventType, code: input.code?.slice(0, 120) ?? null,
     message: input.message?.slice(0, 600) ?? null, details: input.details ?? null,
     occurredAt: new Date().toISOString(),
   });
+  if (!event) return;
+  pending().push(event);
   queue = pending().slice(-MAX_QUEUED);
   persist();
   void flushSessionDiagnostics();
