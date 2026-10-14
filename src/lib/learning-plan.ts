@@ -36,24 +36,36 @@ export function isDue(word: PracticeEvidence, now = new Date()): boolean {
 // learner error (zero correct attempts) as an example of good Finnish.
 export function selectReviewWords<T extends PracticeEvidence>(words: T[], now = new Date(), limit = 5): T[] {
   const due = words.filter((word) => isDue(word, now));
+  const secure = words.filter((word) => word.mastery >= 4);
+  const useful = due.filter((word) => word.correctCount > 0 || word.incorrectCount === 0)
+    .filter((word) => word.incorrectCount > 0 || word.mastery >= 4
+      || !secure.some((known) => known.finnish !== word.finnish && phraseSimilarity(known.finnish, word.finnish) >= 0.5));
   const byAge = (a: T, b: T) => (a.nextReviewAt ?? "").localeCompare(b.nextReviewAt ?? "")
     || (a.lastSeenAt ?? "").localeCompare(b.lastSeenAt ?? "");
   const groups = {
-    practicing: due.filter((word) => practiceStage(word) === "practicing" && word.correctCount > 0).sort(byAge),
-    once: due.filter((word) => practiceStage(word) === "once" && word.correctCount > 0).sort(byAge),
-    introduced: due.filter((word) => practiceStage(word) === "introduced").sort(byAge),
-    secure: due.filter((word) => practiceStage(word) === "secure").sort(byAge),
+    practicing: useful.filter((word) => practiceStage(word) === "practicing").sort(byAge),
+    once: useful.filter((word) => practiceStage(word) === "once").sort(byAge),
+    introduced: useful.filter((word) => practiceStage(word) === "introduced").sort(byAge),
+    secure: useful.filter((word) => practiceStage(word) === "secure").sort(byAge),
   };
   const selected: T[] = [];
   for (const stage of ["practicing", "once", "once", "introduced", "secure"] as const) {
-    const word = groups[stage].shift();
+    const index = groups[stage].findIndex((word) => selected.every((picked) => phraseSimilarity(word.finnish, picked.finnish) < 0.5));
+    const word = index < 0 ? undefined : groups[stage].splice(index, 1)[0];
     if (word) selected.push(word);
   }
   for (const word of [...groups.practicing, ...groups.once, ...groups.introduced, ...groups.secure]) {
     if (selected.length >= limit) break;
-    if (!selected.some((picked) => picked.finnish === word.finnish)) selected.push(word);
+    if (selected.every((picked) => phraseSimilarity(word.finnish, picked.finnish) < 0.5)) selected.push(word);
   }
   return selected.slice(0, limit);
+}
+
+function phraseSimilarity(first: string, second: string): number {
+  const a = new Set(key(first).split(/[^\p{L}]+/u).filter(Boolean));
+  const b = new Set(key(second).split(/[^\p{L}]+/u).filter(Boolean));
+  const intersection = [...a].filter((word) => b.has(word)).length;
+  return intersection / (a.size + b.size - intersection || 1);
 }
 
 const FALLBACK_TARGETS: NewTarget[] = [

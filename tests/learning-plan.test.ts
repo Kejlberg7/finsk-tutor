@@ -34,6 +34,18 @@ test("review sample is small, mixed and never models an uncorrected error", () =
   assert.equal(selected.some((item) => item.finnish === "wrong learner phrase"), false);
 });
 
+test("near-duplicates of secure phrases do not consume the review slots", () => {
+  const secureGreeting = { ...word("ihan hyvää, kiitos", 5, 0, 5), nextReviewAt: "2026-11-01T12:00:00Z" };
+  const selected = selectReviewWords([
+    secureGreeting,
+    word("ihan hyvää", 1, 0, 1),
+    word("ihan hyvin, kiitos", 1, 0, 1),
+    word("paljonko tämä maksaa?", 1, 0, 1),
+    word("tarvitsen apua", 2, 0, 2),
+  ], now);
+  assert.deepEqual(selected.map((item) => item.finnish), ["tarvitsen apua", "paljonko tämä maksaa?"]);
+});
+
 test("old review-only titles cannot keep future lessons in a loop", () => {
   const known = [word("ihan hyvää, kiitos", 10, 0, 5)];
   const plan = buildLessonPlan(known, [{ finnish: "ihan hyvää, kiitos", english: "I am fine" },
