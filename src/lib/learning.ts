@@ -2,9 +2,10 @@ import "server-only";
 import { and, asc, count, desc, eq, gte, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
 import { ensureDatabaseSchema, getDatabase, isDatabaseConfigured } from "@/db";
 import { apiUsageEvents, grammarSkills, learnerProfile, practiceSessions, vocabulary } from "@/db/schema";
-import type { LearningSnapshot, TranscriptLine } from "@/lib/learning-types";
+import type { LearningSnapshot, SessionRecap, TranscriptLine } from "@/lib/learning-types";
 import { estimateResponseCostUsd, readResponseTokenUsage } from "@/lib/api-cost";
 import { compactTranscript, completedTurnCutoff } from "@/lib/transcript";
+import { buildLessonPlan, nextCorrectDayState, selectReviewWords, type NewTarget } from "@/lib/learning-plan";
 
 const DEFAULT_SNAPSHOT: LearningSnapshot = {
   memoryReady: false,
@@ -12,6 +13,7 @@ const DEFAULT_SNAPSHOT: LearningSnapshot = {
   currentFocus: "Korte hverdagssætninger og tydelig udtale",
   nextLesson: "Hilsner og at præsentere sig selv",
   upcomingLessons: ["Hilsner og at præsentere sig selv"],
+  reviewOnlyPlanned: false,
   dueWords: [],
   wordProgress: [],
   knownWordCount: 0,
@@ -21,6 +23,7 @@ const DEFAULT_SNAPSHOT: LearningSnapshot = {
   totalPracticeSeconds: 0,
   estimatedApiCostUsd: 0,
   lastSummary: null,
+  lastRecap: null,
 };
 
 type ReviewResult = "correct" | "incorrect" | "introduced";
@@ -31,6 +34,9 @@ type SessionReview = {
   currentFocus: string;
   nextLesson: string;
   upcomingLessons: string[];
+  nextSessionReviewOnly: boolean;
+  newTargets: NewTarget[];
+  recap: SessionRecap;
   words: Array<{
     finnish: string;
     english: string;
@@ -53,14 +59,8 @@ export async function getLearningSnapshot(): Promise<LearningSnapshot> {
     await ensureDatabaseSchema();
     const db = getDatabase();
     const now = new Date();
-    const [profiles, due, words, totals, mastered, dueTotal, completed, practiceTime, voiceUsage, modelUsage, recentSessions] = await Promise.all([
+    const [profiles, words, totals, mastered, dueTotal, completed, practiceTime, voiceUsage, modelUsage, recentSessions] = await Promise.all([
       db.select().from(learnerProfile).where(eq(learnerProfile.id, 1)).limit(1),
-      db
-        .select({ finnish: vocabulary.finnish, english: vocabulary.english, mastery: vocabulary.mastery })
-        .from(vocabulary)
-        .where(or(isNull(vocabulary.nextReviewAt), lte(vocabulary.nextReviewAt, now)))
-        .orderBy(asc(vocabulary.nextReviewAt))
-        .limit(8),
       db
         .select({
           finnish: vocabulary.finnish,
@@ -70,6 +70,7 @@ export async function getLearningSnapshot(): Promise<LearningSnapshot> {
           mastery: vocabulary.mastery,
           correctCount: vocabulary.correctCount,
           incorrectCount: vocabulary.incorrectCount,
+          correctDayCount: vocabulary.correctDayCount,
           lastFeedback: vocabulary.lastFeedback,
           lastSeenAt: vocabulary.lastSeenAt,
           nextReviewAt: vocabulary.nextReviewAt,
@@ -90,29 +91,33 @@ export async function getLearningSnapshot(): Promise<LearningSnapshot> {
         .where(isNotNull(practiceSessions.endedAt)),
       db.select({ value: sql<string>`COALESCE(SUM(${apiUsageEvents.estimatedCostUsd}), 0)` }).from(apiUsageEvents),
       db
-        .select({ summary: practiceSessions.summary })
+        .select({ summary: practiceSessions.summary, recap: practiceSessions.recap })
         .from(practiceSessions)
         .where(and(eq(practiceSessions.status, "completed"), isNotNull(practiceSessions.summary)))
         .orderBy(desc(practiceSessions.endedAt))
         .limit(1),
     ]);
     const profile = profiles[0];
-    const savedUpcomingLessons = Array.isArray(profile?.upcomingLessons)
-      ? profile.upcomingLessons.filter((lesson): lesson is string => typeof lesson === "string" && Boolean(lesson.trim())).slice(0, 3)
-      : [];
+    const progress = words.map((word) => ({
+      ...word,
+      lastSeenAt: word.lastSeenAt?.toISOString() ?? null,
+      nextReviewAt: word.nextReviewAt?.toISOString() ?? null,
+    }));
+    const plan = buildLessonPlan(progress, Array.isArray(profile?.nextTargets) ? profile.nextTargets : [],
+      profile?.reviewOnlyNextSession === 1, now);
+    const due = selectReviewWords(progress, now).map((word) => ({
+      finnish: word.finnish, english: word.english, mastery: word.mastery,
+    }));
 
     return {
       memoryReady: true,
       level: profile?.level ?? DEFAULT_SNAPSHOT.level,
       currentFocus: profile?.currentFocus ?? DEFAULT_SNAPSHOT.currentFocus,
-      nextLesson: profile?.nextLesson ?? DEFAULT_SNAPSHOT.nextLesson,
-      upcomingLessons: savedUpcomingLessons.length ? savedUpcomingLessons : [profile?.nextLesson ?? DEFAULT_SNAPSHOT.nextLesson],
+      nextLesson: plan.nextLesson,
+      upcomingLessons: plan.upcomingLessons,
+      reviewOnlyPlanned: profile?.reviewOnlyNextSession === 1,
       dueWords: due,
-      wordProgress: words.map((word) => ({
-        ...word,
-        lastSeenAt: word.lastSeenAt?.toISOString() ?? null,
-        nextReviewAt: word.nextReviewAt?.toISOString() ?? null,
-      })),
+      wordProgress: progress,
       knownWordCount: totals[0]?.value ?? 0,
       masteredWordCount: mastered[0]?.value ?? 0,
       dueWordCount: dueTotal[0]?.value ?? 0,
@@ -120,6 +125,7 @@ export async function getLearningSnapshot(): Promise<LearningSnapshot> {
       totalPracticeSeconds: Math.floor(Number(practiceTime[0]?.value ?? 0)),
       estimatedApiCostUsd: Number((Number(voiceUsage[0]?.value ?? 0) * 0.05 / 60 + Number(modelUsage[0]?.value ?? 0)).toFixed(4)),
       lastSummary: recentSessions[0]?.summary ?? null,
+      lastRecap: recentSessions[0]?.recap ?? null,
     };
   } catch (error) {
     console.error("Could not load learning memory", error);
@@ -129,20 +135,16 @@ export async function getLearningSnapshot(): Promise<LearningSnapshot> {
 
 export async function getTutorInstructions(): Promise<{ instructions: string; snapshot: LearningSnapshot }> {
   const snapshot = await getLearningSnapshot();
-  let familiarWords: Array<{ finnish: string; english: string; mastery: number }> = [];
   let recentSummaries: string[] = [];
 
   if (snapshot.memoryReady) {
     try {
-      const [words, sessions] = await Promise.all([
-        getDatabase().select({ finnish: vocabulary.finnish, english: vocabulary.english, mastery: vocabulary.mastery })
-          .from(vocabulary).orderBy(desc(vocabulary.mastery), desc(vocabulary.lastSeenAt)).limit(20),
-        getDatabase().select({ summary: practiceSessions.summary }).from(practiceSessions)
+      const sessions = await getDatabase().select({ summary: practiceSessions.summary, recap: practiceSessions.recap }).from(practiceSessions)
           .where(and(eq(practiceSessions.status, "completed"), isNotNull(practiceSessions.summary)))
-          .orderBy(desc(practiceSessions.endedAt)).limit(3),
-      ]);
-      familiarWords = words;
-      recentSummaries = sessions.map((row) => row.summary).filter((value): value is string => Boolean(value));
+          .orderBy(desc(practiceSessions.endedAt)).limit(3);
+      recentSummaries = sessions.map((row) => [row.summary,
+        row.recap?.needsWork.length ? `Needs work: ${row.recap.needsWork.join("; ")}` : "",
+      ].filter(Boolean).join(" | ")).filter(Boolean);
     } catch (error) {
       console.error("Could not load familiar words", error);
     }
@@ -151,10 +153,12 @@ export async function getTutorInstructions(): Promise<{ instructions: string; sn
   const due = snapshot.dueWords.length
     ? snapshot.dueWords.map((word) => `${word.finnish} (${word.english})`).join(", ")
     : "none yet";
-  const familiar = familiarWords.length
-    ? familiarWords.map((word) => `${word.finnish} (${word.english}, score ${word.mastery}/5)`).join(", ")
-    : "none recorded yet";
-  const secure = familiarWords.filter((word) => word.mastery >= 4).map((word) => word.finnish).join(", ") || "none yet";
+  const secure = snapshot.wordProgress.filter((word) => word.mastery >= 4)
+    .sort((a, b) => (a.lastSeenAt ?? "").localeCompare(b.lastSeenAt ?? ""))
+    .slice(0, 2).map((word) => word.finnish).join(", ") || "none yet";
+  const repair = snapshot.wordProgress.filter((word) => word.correctCount === 0 && word.incorrectCount > 0 && word.lastFeedback)
+    .sort((a, b) => (a.lastSeenAt ?? "").localeCompare(b.lastSeenAt ?? ""))
+    .slice(0, 1).map((word) => `${word.finnish}: ${word.lastFeedback}`).join(" | ") || "none";
   const upcoming = snapshot.upcomingLessons.map((lesson, index) => `${index + 1}. ${lesson}`).join("; ");
 
   const instructions = `
@@ -172,7 +176,7 @@ TEACHING METHOD
 - In every lesson block, practise both directions: give a short Finnish phrase and ask what it means in Danish; also give a Danish meaning and ask the learner to produce the Finnish. Alternate directions instead of making the learner only repeat Finnish.
 - When introducing a phrase, give its meaning once. Later, test understanding by asking for the Danish meaning without immediately supplying it.
 - In a Finnish-to-Danish comprehension test, say only the Finnish phrase before asking for its Danish meaning. Never give the English translation or gloss immediately before that question; it gives away the answer. Wait for the learner's attempt, then explain or correct. If they ask for help or cannot answer, give the meaning afterward and retest later without a hint.
-- Review due words before adding new material. Every session must include retrieval of phrases from earlier sessions, not only words from today's lesson.
+- Check one or two selected older phrases briefly, then move to the planned new target unless this session is explicitly review-only. The full due backlog is not a script or a quota. Every session should also revisit a few phrases from earlier sessions across the 30 minutes.
 - Give more practice to words with low scores or repeated errors. Reuse high-score words only as occasional spaced review or sentence building.
 - Unless the learner has asked for review only, introduce one or two genuinely new, connected words or a useful phrase after each short review burst. In a 30-minute session, aim for several small new targets, not a long loop of known sentences. Revisit the new target later in a different context. Do not overwhelm with a large vocabulary list.
 - Correct gently: if you clearly heard the learner's Finnish attempt, quote their exact attempt first ("You said: …"), then say the corrected Finnish slowly ("A natural form is: …"), and explain the specific difference in one short English sentence. Do not invent an exact quote from uncertain speech recognition; ask for a repeat instead. If the attempt was already acceptable, say so rather than manufacturing an error.
@@ -189,7 +193,7 @@ SESSION PACING AND PROGRESSION
 - A block should contain a small number of targeted retrieval questions, balanced Finnish-to-Danish comprehension and Danish-to-Finnish production, and a short varied exchange. By default add one connected new target after a brief retrieval burst, then use it in two contexts before moving on. If the learner explicitly wants review only, use fresh combinations of known material instead.
 - Do not limit cumulative review to one or two questions for the entire session. Retrieve several phrases from different earlier sessions across the full 30-minute practice, especially near the end, while keeping each individual review burst short.
 - If the learner asks for a brief review of earlier material, do that for a few prompts and then return to a connected new target. If they explicitly ask for a review-only session, practise only what has already been learned, or say not to add new words, stop introducing new vocabulary and grammar for the rest of that session; do not sneak in a “small new twist.”
-- A review-only request overrides the default plan and any instruction to introduce new material. Persist this preference in the next-session plan so the next lesson can also be review-only when appropriate.
+- A review-only request overrides the default plan for THIS session. Do not assume it applies to a future session unless the learner explicitly asks for that.
 - Advance after a phrase is correct in a couple of varied contexts. Avoid asking for the same sentence to be repeated several times after a clear success; revisit it later in a different prompt or translation direction.
 - When asking a retrieval question, do not give the full answer as a "hint". Start with no hint, then one partial cue only if needed.
 - If the learner says the material is repetitive or asks for something new, acknowledge once and switch to a genuinely different target. If they ask to review old material instead, do that instead of introducing a new target.
@@ -215,10 +219,11 @@ LEARNER MEMORY
 - Approximate level: ${snapshot.level}
 - Current focus: ${snapshot.currentFocus}
 - Planned next lesson: ${snapshot.nextLesson}
+- Review-only explicitly planned for this session: ${snapshot.reviewOnlyPlanned ? "yes — do not add new material" : "no — progress after brief review"}
 - Provisional upcoming lesson blocks: ${upcoming}
-- Due for review: ${due}
-- Familiar vocabulary: ${familiar}
-- Secure vocabulary (brief spaced review only): ${secure}
+- Selected review targets for this session (at most five, not the whole backlog): ${due}
+- Secure examples (optional quick maintenance, no drilling): ${secure}
+- One earlier learner error to revisit with a corrected form (NEVER present the error itself as model Finnish): ${repair}
 - Recent sessions, newest first: ${recentSummaries.join(" | ") || "No completed session recorded yet."}
 
 Use this memory as guidance, not as a script. Do not tell the learner about database scores or internal tracking.
@@ -254,7 +259,6 @@ export async function checkpointPracticeSession(id: number, fragments: Transcrip
   progressCursor: number;
   correctWords: string[];
   difficultWords: string[];
-  suggestedNextBlock: string | null;
 }> {
   if (!isDatabaseConfigured()) throw new Error("Læringshukommelsen mangler en databaseforbindelse.");
   await ensureDatabaseSchema();
@@ -268,7 +272,6 @@ export async function checkpointPracticeSession(id: number, fragments: Transcrip
     progressCursor: session.progressCursor,
     correctWords: [],
     difficultWords: [],
-    suggestedNextBlock: null,
   });
   if (session.status !== "started" || fragments.length <= session.progressCursor) return noChange();
 
@@ -294,7 +297,6 @@ export async function checkpointPracticeSession(id: number, fragments: Transcrip
     progressCursor: applied ? processUntil : session.progressCursor,
     correctWords: applied ? review.words.filter((word) => word.result === "correct").map((word) => word.finnish).slice(0, 8) : [],
     difficultWords: applied ? review.words.filter((word) => word.result === "incorrect").map((word) => word.finnish).slice(0, 8) : [],
-    suggestedNextBlock: applied ? review.nextLesson : null,
   };
 }
 
@@ -322,7 +324,7 @@ export async function completePracticeSession(id: number, fragments: TranscriptL
     await db.transaction(async (tx) => {
       await applyReview(review, true, tx);
       await tx.update(practiceSessions)
-        .set({ summary: review.summary, endedAt: new Date(), status: "completed", progressCursor: fragments.length })
+        .set({ summary: review.summary, recap: review.recap, endedAt: new Date(), status: "completed", progressCursor: fragments.length })
         .where(eq(practiceSessions.id, id));
     });
     return getLearningSnapshot();
@@ -369,20 +371,21 @@ async function analyseTranscript(transcript: TranscriptLine[], memory: LearningS
       model: "gpt-6-luna",
       reasoning: { effort: "low" },
       store: false,
-      max_output_tokens: 1800,
+      max_output_tokens: 2500,
       input: [
         {
           role: "system",
           content:
             `You evaluate a Finnish tutoring transcript. Transcription can be imperfect, so only mark an item correct or incorrect when the learner's attempt and tutor feedback clearly support it. Otherwise use introduced. If a word was attempted repeatedly, use the most recent clear attempt. A tutor correction may itself be wrong; do not penalize a valid learner answer just because the tutor expected a different scripted answer.
-Extract words and grammar results only from scoringTranscript; transcript and priorLearning provide context for summary and planning, not evidence of a new scored attempt. Ignore app-feedback notes as lesson material. If scoringTranscript is empty, return empty words and grammar arrays. For each word, feedback is a brief specific correction explicitly supported by the tutor's words, or an empty string. Mention pronunciation only if the tutor explicitly corrected pronunciation; do not infer accent from transcript spelling. Use stable lowercase ASCII keys for grammar topics.
-Write the summary, focus, lesson, and meanings in concise English. Plan three connected 4–6 minute upcoming lesson blocks using transcript and priorLearning. The learner wants Finnish-to-Danish comprehension and Danish-to-Finnish production, plus recurring retrieval of phrases from previous sessions. Include both directions and older-phrase review in the plan.
-By default, after brief review, plan one or two genuinely new connected targets across upcoming blocks; do not build all three around mastered sentences. Distinguish a request for a short review burst from an explicit review-only or no-new-vocabulary request. Only when the learner clearly asks for review only, no new words, or an entire session refreshing old material should nextLesson and the upcoming blocks contain no new vocabulary or grammar. This preference overrides default progression.
-Never plan a full drill of phrases the learner already used successfully, even if the prior plan suggested it. If the learner complained about excessive repetition, vary the retrieval prompt and translation direction and introduce a new target unless review-only was requested. The first upcoming lesson must equal nextLesson; the other two are provisional logical continuations, not claims that they were completed. Keep each lesson title concise and name the review theme or target. The level may be A0, A1, A2, B1, B2, C1, or C2 with a short qualifier. Return structured JSON only.`,
+Extract words and grammar results only from scoringTranscript; transcript and priorLearning provide context for summary and planning, not evidence of a new scored attempt. Ignore app-feedback notes as lesson material. If scoringTranscript is empty, return empty words and grammar arrays. One result per canonical word or SHORT valid Finnish phrase per segment, not every full sentence or inflected restatement. If the learner made a mistake, use the corrected VALID Finnish form as the key and result=incorrect; put the learner's mistake in feedback. Never store an ungrammatical learner attempt as a model phrase. If a word was attempted repeatedly, use the most recent clear attempt. A tutor correction may itself be wrong; do not penalize a valid learner answer just because the tutor expected a different scripted answer. Mention pronunciation only if the tutor explicitly corrected pronunciation; do not infer accent from transcript spelling. Use stable lowercase ASCII keys for grammar topics.
+Write the summary and recap in concise English. Recap.progress must name up to 3 concrete achievements supported by the transcript; recap.needsWork names up to 3 specific remaining difficulties; recap.nextStep states one actionable next move. Empty arrays are okay; do not invent progress or claim a word is mastered after one success.
+For the NEXT session, propose two genuinely new connected Finnish targets with English meanings in newTargets, absent from priorLearning. Prefer a different everyday situation if work/home/greetings were repeated. Do not propose existing phrases with trivial punctuation or inflection changes as new. The lesson should mix short older-phrase retrieval, Finnish-to-Danish comprehension, Danish-to-Finnish production, and new material. Do not build all blocks around mastered sentences.
+Set nextSessionReviewOnly=true ONLY if the learner clearly requested the NEXT session be review-only or contain no new material. A request for review during this session, or a general comment that some days can be review-only, does NOT carry over. If true, return no newTargets. The learner's preference overrides default progression.
+Never plan a full drill of phrases the learner already used successfully. The level may be A0, A1, A2, B1, B2, C1, or C2 with a short qualifier. Return structured JSON only.`,
         },
         {
           role: "system",
-          content: "Planning preference: unless the learner explicitly requested review-only or no new vocabulary, alternate brief older-material retrieval with one or two genuinely new connected targets in the upcoming blocks. Do not make all three blocks a loop of previously mastered phrases. If they asked why two Finnish forms differ, plan one short contrastive explanation and check understanding before resuming the lesson.",
+          content: "Planning preference: introduce new connected targets next session by default. A review-only request for the current session does not persist automatically. Do not build three blocks around previously mastered phrases. If they asked why two Finnish forms differ, include one short contrastive explanation before practice.",
         },
         {
           role: "user",
@@ -397,6 +400,7 @@ Never plan a full drill of phrases the learner already used successfully, even i
                 mastery: word.mastery,
                 incorrectCount: word.incorrectCount,
               })),
+              knownFinnish: memory.wordProgress.map((word) => word.finnish),
             },
             transcript,
             scoringTranscript,
@@ -416,6 +420,17 @@ Never plan a full drill of phrases the learner already used successfully, even i
               currentFocus: { type: "string" },
               nextLesson: { type: "string" },
               upcomingLessons: { type: "array", items: { type: "string" } },
+              nextSessionReviewOnly: { type: "boolean" },
+              newTargets: {
+                type: "array", items: { type: "object", properties: {
+                  finnish: { type: "string" }, english: { type: "string" },
+                }, required: ["finnish", "english"], additionalProperties: false },
+              },
+              recap: { type: "object", properties: {
+                progress: { type: "array", items: { type: "string" } },
+                needsWork: { type: "array", items: { type: "string" } },
+                nextStep: { type: "string" },
+              }, required: ["progress", "needsWork", "nextStep"], additionalProperties: false },
               words: {
                 type: "array",
                 items: {
@@ -446,7 +461,7 @@ Never plan a full drill of phrases the learner already used successfully, even i
                 },
               },
             },
-            required: ["summary", "level", "currentFocus", "nextLesson", "upcomingLessons", "words", "grammar"],
+            required: ["summary", "level", "currentFocus", "nextLesson", "upcomingLessons", "nextSessionReviewOnly", "newTargets", "recap", "words", "grammar"],
             additionalProperties: false,
           },
         },
@@ -485,6 +500,8 @@ async function applyReview(
       currentFocus: review.currentFocus,
       nextLesson,
       upcomingLessons,
+      nextTargets: review.nextSessionReviewOnly ? [] : review.newTargets.slice(0, 2),
+      reviewOnlyNextSession: review.nextSessionReviewOnly ? 1 : 0,
       updatedAt: now,
     })
     .onConflictDoUpdate({
@@ -494,6 +511,8 @@ async function applyReview(
         currentFocus: review.currentFocus,
         nextLesson,
         upcomingLessons,
+        nextTargets: review.nextSessionReviewOnly ? [] : review.newTargets.slice(0, 2),
+        reviewOnlyNextSession: review.nextSessionReviewOnly ? 1 : 0,
         updatedAt: now,
       },
     });
@@ -501,9 +520,10 @@ async function applyReview(
   for (const word of uniqueBy(review.words, (item) => normalise(item.finnish))) {
     const finnish = normalise(word.finnish);
     if (!finnish) continue;
-    const existing = await db.select().from(vocabulary).where(eq(vocabulary.finnish, finnish)).limit(1);
+    const existing = await db.select().from(vocabulary).where(eq(vocabulary.finnish, finnish)).for("update").limit(1);
     const current = existing[0];
     const scores = nextScores(current?.mastery ?? 0, current?.correctCount ?? 0, current?.incorrectCount ?? 0, word.result);
+    const dayState = nextCorrectDayState(current?.correctDayCount ?? 0, current?.lastCorrectDay ?? null, word.result === "correct", now);
     const values = {
       finnish,
       english: word.english.trim(),
@@ -512,6 +532,7 @@ async function applyReview(
       mastery: scores.mastery,
       correctCount: scores.correctCount,
       incorrectCount: scores.incorrectCount,
+      ...dayState,
       lastFeedback: word.result === "incorrect" && word.feedback.trim()
         ? word.feedback.trim().slice(0, 240)
         : current?.lastFeedback ?? null,

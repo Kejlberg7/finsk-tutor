@@ -8,6 +8,7 @@ import { getLearningSnapshot } from "@/lib/learning";
 import { getStatsData } from "@/lib/stats-server";
 import { closeReasonLabel } from "@/lib/session-diagnostics";
 import type { WordProgress } from "@/lib/learning-types";
+import { practiceCounts } from "@/lib/learning-plan";
 import "./stats.css";
 
 export const metadata: Metadata = {
@@ -19,9 +20,8 @@ export default async function StatsPage() {
   if (!(await getSession())) redirect("/login");
   const [learning, data] = await Promise.all([getLearningSnapshot(), getStatsData()]);
   const words = learning.wordProgress;
+  const evidence = practiceCounts(words);
   const secure = words.filter((word) => word.mastery >= 4);
-  const building = words.filter((word) => word.mastery >= 2 && word.mastery < 4);
-  const newWords = words.filter((word) => word.mastery < 2);
   const focusWords = [...words]
     .filter((word) => word.mastery < 4 && word.incorrectCount > 0)
     .sort((a, b) => (b.incorrectCount - a.incorrectCount) || (a.mastery - b.mastery))
@@ -63,8 +63,8 @@ export default async function StatsPage() {
             </div>
           </div>
           <div className="insights-hero-ring" style={{ "--ring-progress": `${goalProgress}%` } as CSSProperties}
-            role="progressbar" aria-label="Sikre ord mod næste milepæl" aria-valuenow={secure.length} aria-valuemin={0} aria-valuemax={nextGoal}>
-            <div><span>NÆSTE MILEPÆL</span><strong>{secure.length}<small> / {nextGoal}</small></strong><span>sikre ord</span></div>
+            role="progressbar" aria-label="Stærke udtryk mod næste milepæl" aria-valuenow={secure.length} aria-valuemin={0} aria-valuemax={nextGoal}>
+            <div><span>NÆSTE MILEPÆL</span><strong>{secure.length}<small> / {nextGoal}</small></strong><span>stærke udtryk</span></div>
           </div>
         </section>
 
@@ -73,7 +73,7 @@ export default async function StatsPage() {
         <section className="insights-kpis" aria-label="Dine nøgletal">
           <Metric symbol="◷" tone="green" value={formatDuration(data.practice.totalSeconds)} label="Registreret øvetid" note="Live-tid hvor tilgængelig; ellers klokketid" />
           <Metric symbol="◉" tone="blue" value={number.format(data.sessions.length)} label="Samtaledele" note="Afbrydelser kan dele en øvetur i flere" />
-          <Metric symbol="✦" tone="lime" value={number.format(words.length)} label="Ord mødt" note={`${number.format(secure.length)} sikre · ${number.format(learning.dueWordCount)} til repetition`} />
+          <Metric symbol="✦" tone="lime" value={number.format(words.length)} label="Ord og udtryk mødt" note={`${number.format(evidence.introduced + evidence.once)} kun nævnt eller ét forsøg`} />
           <Metric symbol="$" tone="amber" value={formatUsd(learning.estimatedApiCostUsd)} label="Estimeret API-forbrug" note="Taletid estimeret · øvrige kald registreret" />
         </section>
 
@@ -137,25 +137,28 @@ export default async function StatsPage() {
 
         <div className="insights-section-heading">
           <div><span className="insights-kicker">02 / DINE ORD</span><h2>Et ord ad gangen.</h2></div>
-          <p>Øveniveauet er tutorens vurdering ud fra samtalerne — ikke en test eller en officiel sprogvurdering.</p>
+          <p>Én vurdering er ikke beherskelse. Tallene gælder både ord og hele udtryk og bygger på tutorens samtaleanalyse.</p>
         </div>
 
         <div className="insights-words-grid">
           <section className="insights-panel insights-wordscape" aria-labelledby="wordscape-title">
             <span className="insights-kicker">ORDFORRÅD LIGE NU</span>
-            <h3 id="wordscape-title">Hvor ordene står</h3>
-            <p className="insights-muted">{words.length ? `${number.format(words.length)} ord er registreret fra dine samtaler.` : "Når du har øvet ord i en samtale, vises de her."}</p>
-            <div className="insights-wordstack" role="img" aria-label={`${newWords.length} nye ord, ${building.length} under opbygning, ${secure.length} sikre ord`}>
-              {newWords.length > 0 && <span className="new" style={{ width: `${newWords.length / wordTotal * 100}%` }} />}
-              {building.length > 0 && <span className="building" style={{ width: `${building.length / wordTotal * 100}%` }} />}
-              {secure.length > 0 && <span className="secure" style={{ width: `${secure.length / wordTotal * 100}%` }} />}
+            <h3 id="wordscape-title">Hvor dine udtryk står</h3>
+            <p className="insights-muted">{words.length ? `${number.format(words.length)} ord og udtryk er registreret. ${number.format(words.filter((word) => word.finnish.includes(" ")).length)} af posterne er flerordsudtryk.` : "Når du har øvet i en samtale, vises udtrykkene her."}</p>
+            <div className="insights-wordstack" role="img" aria-label={`${evidence.introduced} kun nævnt, ${evidence.once} med ét forsøg, ${evidence.practicing} øvet flere gange, ${evidence.secure} sikre efter score`}>
+              {evidence.introduced > 0 && <span className="introduced" style={{ width: `${evidence.introduced / wordTotal * 100}%` }} />}
+              {evidence.once > 0 && <span className="once" style={{ width: `${evidence.once / wordTotal * 100}%` }} />}
+              {evidence.practicing > 0 && <span className="building" style={{ width: `${evidence.practicing / wordTotal * 100}%` }} />}
+              {evidence.secure > 0 && <span className="secure" style={{ width: `${evidence.secure / wordTotal * 100}%` }} />}
             </div>
             <div className="insights-wordlegend">
-              <span><i className="new" /> <strong>{newWords.length}</strong> netop mødt <small>0–1/5</small></span>
-              <span><i className="building" /> <strong>{building.length}</strong> på vej <small>2–3/5</small></span>
-              <span><i className="secure" /> <strong>{secure.length}</strong> sikre <small>4–5/5</small></span>
+              <span><i className="introduced" /> <strong>{evidence.introduced}</strong> kun nævnt <small>0 vurderede forsøg</small></span>
+              <span><i className="once" /> <strong>{evidence.once}</strong> ét forsøg <small>ikke nok til at være sikkert</small></span>
+              <span><i className="building" /> <strong>{evidence.practicing}</strong> øvet flere gange <small>mindst 2 vurderinger</small></span>
+              <span><i className="secure" /> <strong>{evidence.secure}</strong> sikre efter score <small>4–5/5</small></span>
             </div>
-            <div className="insights-review-callout"><span className="insights-review-icon">↺</span><div><strong>{learning.dueWordCount} ord er klar til repetition</strong><p>Også sikre ord kan dukke op igen, når det er tid til at holde dem ved lige.</p></div></div>
+            <p className="insights-muted">{evidence.confirmedAcrossDays} score-sikre udtryk er også registreret korrekte på mindst to forskellige dage siden den nye dagstælling blev indført. Historiske dage kan ikke genskabes sikkert.</p>
+            <div className="insights-review-callout"><span className="insights-review-icon">↺</span><div><strong>{learning.dueWordCount} poster er klar til repetition</strong><p>Vi vælger kun få varierede udtryk pr. samtale, så der også bliver plads til nyt stof.</p></div></div>
           </section>
 
           <section className="insights-panel insights-focus" aria-labelledby="focus-title">
@@ -170,11 +173,11 @@ export default async function StatsPage() {
 
         <div className="insights-knowledge-grid">
           <section className="insights-panel insights-wins" aria-labelledby="wins-title">
-            <span className="insights-kicker">DET SIDDER FAST</span>
-            <h3 id="wins-title">Dine seneste sikre ord</h3>
+            <span className="insights-kicker">HØJ ØVESCORE</span>
+            <h3 id="wins-title">Dine seneste stærke udtryk</h3>
             {recentWins.length ? <div className="insights-win-list">{recentWins.map((word) => (
               <div key={word.finnish}><strong lang="fi">{word.finnish}</strong><span>{word.danish || word.english}</span><small>{word.mastery}/5</small></div>
-            ))}</div> : <p className="insights-muted">De første sikre ord dukker op her, når de er brugt rigtigt flere gange.</p>}
+            ))}</div> : <p className="insights-muted">De første stærke udtryk dukker op her, når de er vurderet rigtige flere gange.</p>}
           </section>
           <section className="insights-panel insights-grammar" aria-labelledby="grammar-title">
             <span className="insights-kicker">OGSÅ GRAMMATIK TÆLLER</span>

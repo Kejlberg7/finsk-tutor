@@ -54,6 +54,8 @@ async function createSchema(): Promise<void> {
     )
   `);
   await sqlClient.unsafe(`ALTER TABLE learner_profile ADD COLUMN IF NOT EXISTS upcoming_lessons jsonb`);
+  await sqlClient.unsafe(`ALTER TABLE learner_profile ADD COLUMN IF NOT EXISTS next_targets jsonb`);
+  await sqlClient.unsafe(`ALTER TABLE learner_profile ADD COLUMN IF NOT EXISTS review_only_next_session integer NOT NULL DEFAULT 0`);
   await sqlClient.unsafe(`
     CREATE TABLE IF NOT EXISTS vocabulary (
       id serial PRIMARY KEY,
@@ -70,6 +72,8 @@ async function createSchema(): Promise<void> {
   `);
   await sqlClient.unsafe(`ALTER TABLE vocabulary ADD COLUMN IF NOT EXISTS correct_count integer NOT NULL DEFAULT 0`);
   await sqlClient.unsafe(`ALTER TABLE vocabulary ADD COLUMN IF NOT EXISTS incorrect_count integer NOT NULL DEFAULT 0`);
+  await sqlClient.unsafe(`ALTER TABLE vocabulary ADD COLUMN IF NOT EXISTS correct_day_count integer NOT NULL DEFAULT 0`);
+  await sqlClient.unsafe(`ALTER TABLE vocabulary ADD COLUMN IF NOT EXISTS last_correct_day text`);
   await sqlClient.unsafe(`ALTER TABLE vocabulary ADD COLUMN IF NOT EXISTS last_feedback text`);
   await sqlClient.unsafe(`ALTER TABLE vocabulary ADD COLUMN IF NOT EXISTS last_seen_at timestamptz`);
   await sqlClient.unsafe(`CREATE UNIQUE INDEX IF NOT EXISTS vocabulary_finnish_unique ON vocabulary (finnish)`);
@@ -101,6 +105,7 @@ async function createSchema(): Promise<void> {
   `);
   await sqlClient.unsafe(`ALTER TABLE practice_sessions ADD COLUMN IF NOT EXISTS live_session_id text`);
   await sqlClient.unsafe(`ALTER TABLE practice_sessions ADD COLUMN IF NOT EXISTS transcript jsonb`);
+  await sqlClient.unsafe(`ALTER TABLE practice_sessions ADD COLUMN IF NOT EXISTS recap jsonb`);
   await sqlClient.unsafe(`ALTER TABLE practice_sessions ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'started'`);
   await sqlClient.unsafe(`ALTER TABLE practice_sessions ADD COLUMN IF NOT EXISTS progress_cursor integer NOT NULL DEFAULT 0`);
   await sqlClient.unsafe(`ALTER TABLE practice_sessions ADD COLUMN IF NOT EXISTS voice_seconds integer NOT NULL DEFAULT 0`);

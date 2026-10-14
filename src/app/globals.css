@@ -144,6 +144,7 @@ button:disabled { cursor: not-allowed; opacity: 0.52; }
 .detail-count { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; background: #e9f2e8; color: #2e6945; font-weight: 800; }
 .review-words { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 22px; }
 .review-words span { padding: 8px 11px; border: 1px solid #d6e5d7; border-radius: 10px; background: white; color: #24573d; font-size: 0.82rem; font-weight: 760; }
+.review-selection-note { margin: 12px 0 0; color: var(--muted); font-size: .75rem; line-height: 1.45; }
 .empty-copy, .recent-card p { margin: 15px 0 0; color: var(--muted); font-size: 0.9rem; line-height: 1.55; }
 
 .word-progress { padding: 0; overflow: hidden; }
@@ -176,6 +177,9 @@ button:disabled { cursor: not-allowed; opacity: 0.52; }
 .word-status.secure { background: #eaf4e8; color: #286b42; }
 .word-status.learning { background: #f0f2ee; color: #5d6b60; }
 .word-status.due { background: #fff1df; color: #895a16; }
+.recap-details { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--rule); }
+.recap-details p { margin: 6px 0; color: var(--muted); font-size: .81rem; line-height: 1.5; }
+.recap-details strong { color: var(--ink); }
 .word-next-review { display: block; margin-top: 3px; }
 .word-feedback { margin: 8px 0 0; font-size: 0.83rem; line-height: 1.4; }
 .word-example { margin: 8px 0 0; color: #53665b; font-size: 0.81rem; font-style: italic; line-height: 1.45; }

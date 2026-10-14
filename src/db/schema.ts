@@ -6,6 +6,8 @@ export const learnerProfile = pgTable("learner_profile", {
   currentFocus: text("current_focus").notNull().default("Korte hverdagssætninger og tydelig udtale"),
   nextLesson: text("next_lesson").notNull().default("Hilsner og at præsentere sig selv"),
   upcomingLessons: jsonb("upcoming_lessons").$type<string[]>(),
+  nextTargets: jsonb("next_targets").$type<Array<{ finnish: string; english: string }>>(),
+  reviewOnlyNextSession: integer("review_only_next_session").notNull().default(0),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -20,6 +22,8 @@ export const vocabulary = pgTable(
     mastery: integer("mastery").notNull().default(0),
     correctCount: integer("correct_count").notNull().default(0),
     incorrectCount: integer("incorrect_count").notNull().default(0),
+    correctDayCount: integer("correct_day_count").notNull().default(0),
+    lastCorrectDay: text("last_correct_day"),
     lastFeedback: text("last_feedback"),
     lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
     nextReviewAt: timestamp("next_review_at", { withTimezone: true }),
@@ -49,6 +53,7 @@ export const practiceSessions = pgTable("practice_sessions", {
   endedAt: timestamp("ended_at", { withTimezone: true }),
   transcript: jsonb("transcript"),
   summary: text("summary"),
+  recap: jsonb("recap").$type<{ progress: string[]; needsWork: string[]; nextStep: string }>(),
   status: text("status").notNull().default("started"),
   progressCursor: integer("progress_cursor").notNull().default(0),
   voiceSeconds: integer("voice_seconds").notNull().default(0),

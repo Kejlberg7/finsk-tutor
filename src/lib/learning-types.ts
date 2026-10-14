@@ -16,9 +16,16 @@ export type WordProgress = DueWord & {
   example: string | null;
   correctCount: number;
   incorrectCount: number;
+  correctDayCount: number;
   lastFeedback: string | null;
   lastSeenAt: string | null;
   nextReviewAt: string | null;
+};
+
+export type SessionRecap = {
+  progress: string[];
+  needsWork: string[];
+  nextStep: string;
 };
 
 export type LearningSnapshot = {
@@ -27,6 +34,7 @@ export type LearningSnapshot = {
   currentFocus: string;
   nextLesson: string;
   upcomingLessons: string[];
+  reviewOnlyPlanned: boolean;
   dueWords: DueWord[];
   wordProgress: WordProgress[];
   knownWordCount: number;
@@ -36,6 +44,7 @@ export type LearningSnapshot = {
   totalPracticeSeconds: number;
   estimatedApiCostUsd: number;
   lastSummary: string | null;
+  lastRecap: SessionRecap | null;
 };
 
 export type RecentSession = {
@@ -45,6 +54,7 @@ export type RecentSession = {
   durationSeconds: number;
   estimatedApiCostUsd: number;
   summary: string | null;
+  recap: SessionRecap | null;
   status: string;
   closeReason: string | null;
   closeConfirmed: boolean;

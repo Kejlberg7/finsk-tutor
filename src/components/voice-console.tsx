@@ -10,6 +10,7 @@ import { flushSessionDiagnostics, reportSessionDiagnostic } from "@/lib/session-
 import type { DiagnosticDetails } from "@/lib/session-diagnostics";
 import { closeReasonLabel } from "@/lib/session-diagnostics";
 import { formatDuration } from "@/lib/duration";
+import { practiceCounts, practiceStage } from "@/lib/learning-plan";
 import type { IdeaNote, LearningSnapshot, RecentSession, TranscriptLine, WordProgress } from "@/lib/learning-types";
 
 const EMPTY_LEARNING: LearningSnapshot = {
@@ -18,6 +19,7 @@ const EMPTY_LEARNING: LearningSnapshot = {
   currentFocus: "Korte hverdagssætninger og tydelig udtale",
   nextLesson: "Hilsner og at præsentere sig selv",
   upcomingLessons: ["Hilsner og at præsentere sig selv"],
+  reviewOnlyPlanned: false,
   dueWords: [],
   wordProgress: [],
   knownWordCount: 0,
@@ -27,6 +29,7 @@ const EMPTY_LEARNING: LearningSnapshot = {
   totalPracticeSeconds: 0,
   estimatedApiCostUsd: 0,
   lastSummary: null,
+  lastRecap: null,
 };
 
 const LANGUAGE_LEVELS = [
@@ -53,7 +56,7 @@ type LiveEvent = {
   reason?: string;
 };
 
-type WordFilter = "all" | "secure" | "due" | "learning";
+type WordFilter = "all" | "introduced" | "once" | "practicing" | "secure" | "due";
 
 export default function VoiceConsole() {
   const [status, setStatus] = useState("Klar til en samtale.");
@@ -109,18 +112,19 @@ export default function VoiceConsole() {
     ?? Math.ceil((learning.masteredWordCount + 1) / 100) * 100;
   const milestonePercent = Math.min(100, Math.round((learning.masteredWordCount / nextGoal) * 100));
   const levelCode = learning.level.match(/\b(A0|A1|A2|B1|B2|C1|C2)\b/i)?.[1]?.toUpperCase();
+  const evidence = practiceCounts(learning.wordProgress);
   const wordFilterCounts: Record<WordFilter, number> = {
     all: learning.knownWordCount,
-    secure: learning.masteredWordCount,
+    introduced: evidence.introduced,
+    once: evidence.once,
+    practicing: evidence.practicing,
+    secure: evidence.secure,
     due: learning.dueWordCount,
-    learning: Math.max(0, learning.knownWordCount - learning.masteredWordCount),
   };
   const filteredWords = learning.wordProgress.filter((word) => {
     const due = isWordDue(word);
-    const matchesFilter = wordFilter === "all"
-      || (wordFilter === "secure" && word.mastery >= 4)
-      || (wordFilter === "due" && due)
-      || (wordFilter === "learning" && word.mastery < 4);
+    const matchesFilter = wordFilter === "all" || (wordFilter === "due" && due)
+      || (wordFilter !== "due" && practiceStage(word) === wordFilter);
     const query = wordSearch.trim().toLocaleLowerCase("da-DK");
     const matchesSearch = !query || [word.finnish, word.english, word.danish, word.example]
       .some((value) => value?.toLocaleLowerCase("da-DK").includes(query));
@@ -421,7 +425,7 @@ export default function VoiceConsole() {
         if (!response.ok) throw new Error(apiErrorMessage(payload));
         const result = payload as {
           learning: LearningSnapshot; progressCursor: number; correctWords: string[];
-          difficultWords: string[]; suggestedNextBlock: string | null;
+          difficultWords: string[];
         };
         if (appSessionIdRef.current !== sessionId) return;
         const advanced = result.progressCursor > progressCursorRef.current;
@@ -430,7 +434,7 @@ export default function VoiceConsole() {
         setProgressMessage(advanced
           ? `Ordstatus gemt kl. ${new Intl.DateTimeFormat("da-DK", { hour: "2-digit", minute: "2-digit" }).format(new Date())}.`
           : "Venter på en afsluttet øvelse før næste opdatering.");
-        if (advanced && result.suggestedNextBlock) {
+        if (advanced) {
           const elapsedSeconds = practiceStartedAtRef.current
             ? Math.floor((Date.now() - practiceStartedAtRef.current) / 1_000)
             : 0;
@@ -438,7 +442,7 @@ export default function VoiceConsole() {
             type: "session.thinking.append",
             event_id: `progress_${result.progressCursor}`,
             delegation_id: null,
-            content: `Background learning state, not an instruction to pause: successful items ${result.correctWords.join(", ") || "none"}; items needing another attempt ${result.difficultWords.join(", ") || "none"}; connected next target ${result.suggestedNextBlock.slice(0, 180)}. ${sessionPacingUpdate(elapsedSeconds)} Keep the current conversation flowing.`,
+            content: `Background learning state, not an instruction to pause: successful items ${result.correctWords.join(", ") || "none"}; items needing another attempt ${result.difficultWords.join(", ") || "none"}. Do not repeat successful drills. ${result.learning.reviewOnlyPlanned ? "Continue the explicitly planned review-only session with varied prompts; no new material." : "Move to a new connected target after at most one brief older-phrase check, unless the learner explicitly requested review only for this session."} ${sessionPacingUpdate(elapsedSeconds)} Keep the current conversation flowing.`,
           });
         }
         void refreshHistory();
@@ -848,11 +852,11 @@ export default function VoiceConsole() {
             <section className="milestone-card" aria-label="Din næste milepæl">
               <div className="milestone-copy">
                 <span className="card-kicker">NÆSTE MILEPÆL</span>
-                <h3>{nextGoal} sikre ord</h3>
-                <p>Ord bliver “sikre”, når de har klaret flere øvesamtaler. De dukker stadig op til repetition, bare sjældnere.</p>
-                <div className="milestone-count"><strong>{learning.masteredWordCount}</strong><span>af {nextGoal} ord</span></div>
+                <h3>{nextGoal} stærke udtryk</h3>
+                <p>“Sikker” er tutorens øvescore – ikke et bevis for, at udtrykket er klaret på flere forskellige dage.</p>
+                <div className="milestone-count"><strong>{learning.masteredWordCount}</strong><span>af {nextGoal} udtryk</span></div>
               </div>
-              <div className="milestone-ring" role="progressbar" aria-label="Fremskridt mod næste ordmilepæl" aria-valuenow={learning.masteredWordCount} aria-valuemin={0} aria-valuemax={nextGoal} style={{ background: `conic-gradient(var(--lime) ${milestonePercent}%, #335e50 ${milestonePercent}% 100%)` }}>
+              <div className="milestone-ring" role="progressbar" aria-label="Fremskridt mod næste milepæl for stærke udtryk" aria-valuenow={learning.masteredWordCount} aria-valuemin={0} aria-valuemax={nextGoal} style={{ background: `conic-gradient(var(--lime) ${milestonePercent}%, #335e50 ${milestonePercent}% 100%)` }}>
                 <div><strong>{milestonePercent}%</strong><span>på vej</span></div>
               </div>
             </section>
@@ -869,7 +873,7 @@ export default function VoiceConsole() {
                   </li>
                 ))}
               </ol>
-              <p className="lesson-note">Planen bygger på din seneste gemte samtale og dine øveord. Den opdateres, når du stopper og gemmer. Tutoren kan tilpasse rækkefølgen undervejs.{learning.upcomingLessons.length < 3 ? " Flere blokke vises efter din næste gemte samtale." : ""}</p>
+              <p className="lesson-note">Planen bruger få udvalgte repetitionsmål og nye udtryk. Den opdateres efter gemte samtaler, og tutoren kan tilpasse den undervejs.</p>
             </section>
           </div>
 
@@ -900,8 +904,10 @@ export default function VoiceConsole() {
           </section>
 
           <div className="stat-grid" aria-label="Dine øvestatistikker">
-            <div className="stat-card"><span className="stat-icon green" aria-hidden="true">✧</span><strong>{learning.knownWordCount}</strong><span>Ord mødt</span></div>
-            <div className="stat-card"><span className="stat-icon lime" aria-hidden="true">✓</span><strong>{learning.masteredWordCount}</strong><span>Sikre ord</span></div>
+            <div className="stat-card"><span className="stat-icon green" aria-hidden="true">✧</span><strong>{learning.knownWordCount}</strong><span>Ord og udtryk mødt</span></div>
+            <div className="stat-card"><span className="stat-icon peach" aria-hidden="true">·</span><strong>{evidence.introduced + evidence.once}</strong><span>Kun nævnt / ét forsøg</span></div>
+            <div className="stat-card"><span className="stat-icon blue" aria-hidden="true">↗</span><strong>{evidence.practicing + evidence.secure}</strong><span>Øvet flere gange</span></div>
+            <div className="stat-card"><span className="stat-icon lime" aria-hidden="true">✓</span><strong>{learning.masteredWordCount}</strong><span>Sikre efter score</span></div>
             <div className="stat-card"><span className="stat-icon peach" aria-hidden="true">↺</span><strong>{learning.dueWordCount}</strong><span>Klar til repetition</span></div>
             <div className="stat-card"><span className="stat-icon blue" aria-hidden="true">◉</span><strong>{learning.completedSessionCount}</strong><span>Gemte samtaler</span></div>
             <div className="stat-card time-stat"><span className="stat-icon blue" aria-hidden="true">◷</span><strong>{formatDuration(learning.totalPracticeSeconds)}</strong><span>Samlet samtaletid</span><small>Beregnet fra gemte øveture</small></div>
@@ -910,32 +916,40 @@ export default function VoiceConsole() {
 
           <div className="detail-grid">
             <section className="review-card">
-              <div className="detail-heading"><div><span className="card-kicker">KOMMER IGEN</span><h3>Ord til repetition</h3></div><span className="detail-count">{learning.dueWordCount}</span></div>
+              <div className="detail-heading"><div><span className="card-kicker">KOMMER IGEN</span><h3>Udvalgt til repetition</h3></div><span className="detail-count">{learning.dueWordCount} klar</span></div>
               {learning.dueWords.length ? (
                 <div className="review-words" aria-label="Ord til repetition">
                   {learning.dueWords.map((word) => <span key={word.finnish} lang="fi">{word.finnish}</span>)}
                 </div>
-              ) : <p className="empty-copy">Ingen ord er klar til repetition lige nu. Godt arbejde!</p>}
+              ) : <p className="empty-copy">Ingen egnede udtryk er udvalgt til kort repetition lige nu.</p>}
+              <p className="review-selection-note">Vi tager højst fem varierede udtryk ad gangen – ikke hele køen i én samtale.</p>
             </section>
             <section className="recent-card">
               <span className="card-kicker">SIDSTE SAMTALE</span>
               <h3>Det tog du med dig</h3>
               <p>{learning.lastSummary ?? "Efter din første gemte samtale får du en kort opsummering her."}</p>
+              {learning.lastRecap ? <div className="recap-details">
+                {learning.lastRecap.progress.length > 0 && <p><strong>Det lykkedes:</strong> {learning.lastRecap.progress.join(" · ")}</p>}
+                {learning.lastRecap.needsWork.length > 0 && <p><strong>Øv videre:</strong> {learning.lastRecap.needsWork.join(" · ")}</p>}
+                {learning.lastRecap.nextStep && <p><strong>Næste skridt:</strong> {learning.lastRecap.nextStep}</p>}
+              </div> : null}
             </section>
           </div>
 
           <details className="word-progress">
-            <summary><span><span className="card-kicker">ORD FOR ORD</span><strong>Ordoversigt · {learning.knownWordCount} mødt</strong><small>Se status, oversættelser, forsøg og repetitionsdato for hvert ord</small></span><span className="details-arrow" aria-hidden="true">↗</span></summary>
-            <p className="word-progress-note">“Sikker” betyder øveniveau 4/5 eller 5/5. “Klar til repetition” følger næste repetitionsdato. Et ord kan godt være sikkert og samtidig være klar til en senere repetition.</p>
+            <summary><span><span className="card-kicker">ORD FOR ORD</span><strong>Ord og udtryk · {learning.knownWordCount} mødt</strong><small>Se hvad der kun er nævnt, og hvad du faktisk har øvet</small></span><span className="details-arrow" aria-hidden="true">↗</span></summary>
+            <p className="word-progress-note">Én vurdering er ikke det samme som sikker beherskelse. “Sikker” er en øvescore på 4–5/5; antal korrekte dage registreres fra denne opdatering og kan ikke genskabes sikkert fra gamle samtaler. En post kan være et ord eller en hel frase.</p>
             {learning.wordProgress?.length ? (
               <>
                 <div className="word-progress-controls">
                   <div className="word-filter-list" role="group" aria-label="Filtrér ord efter status">
                     {([
                       ["all", "Alle mødt"],
-                      ["secure", "Sikre"],
+                      ["introduced", "Kun nævnt"],
+                      ["once", "Ét forsøg"],
+                      ["practicing", "Øvet flere gange"],
+                      ["secure", "Sikre efter score"],
                       ["due", "Klar til repetition"],
-                      ["learning", "Under opbygning"],
                     ] as const).map(([filter, label]) => (
                       <button className={wordFilter === filter ? "word-filter active" : "word-filter"} type="button" key={filter} aria-pressed={wordFilter === filter} onClick={() => setWordFilter(filter)}>
                         {label} <span>{wordFilterCounts[filter]}</span>
@@ -952,10 +966,11 @@ export default function VoiceConsole() {
                     <div className="word-progress-heading"><div><strong lang="fi">{word.finnish}</strong><span>{word.danish || word.english}</span>{word.danish && word.english && word.danish !== word.english ? <small className="word-english">Engelsk: {word.english}</small> : null}</div><strong>{word.mastery * 20}%</strong></div>
                     <div className="progress-track" role="progressbar" aria-label={`Øveniveau for ${word.finnish}`} aria-valuenow={word.mastery * 20} aria-valuemin={0} aria-valuemax={100}><span style={{ width: `${word.mastery * 20}%` }} /></div>
                     <div className="word-status-list">
-                      <span className={word.mastery >= 4 ? "word-status secure" : "word-status learning"}>{word.mastery >= 4 ? "Sikkert" : "Under opbygning"}</span>
+                      <span className={practiceStage(word) === "secure" ? "word-status secure" : "word-status learning"}>{wordStageLabel(word)}</span>
                       {isWordDue(word) ? <span className="word-status due">Klar til repetition</span> : null}
+                      {word.mastery >= 4 && word.correctDayCount >= 2 ? <span className="word-status secure">Korrekt på flere dage</span> : null}
                     </div>
-                    <small>{word.correctCount} rigtige · {word.incorrectCount} rettet{word.lastSeenAt ? ` · Øvet ${formatShortDate(word.lastSeenAt)}` : ""}</small>
+                    <small>{word.correctCount} rigtige · {word.incorrectCount} rettet{word.lastSeenAt ? ` · ${word.correctCount + word.incorrectCount === 0 ? "Nævnt" : "Vurderet"} ${formatShortDate(word.lastSeenAt)}` : ""}{word.correctDayCount > 0 ? ` · ${word.correctDayCount} korrekt${word.correctDayCount === 1 ? " dag" : "e dage"} registreret fremover` : ""}</small>
                     {!isWordDue(word) && word.nextReviewAt ? <small className="word-next-review">Næste repetition {formatShortDate(word.nextReviewAt)}</small> : null}
                     {word.lastFeedback ? <p className="word-feedback">Seneste rettelse: {word.lastFeedback}</p> : null}
                     {word.example ? <p className="word-example" lang="fi">{word.example}</p> : null}
@@ -977,6 +992,11 @@ export default function VoiceConsole() {
                     <details className="archive-item" key={session.id}>
                       <summary><span><strong>{formatDate(session.startedAt)}</strong><small>{formatDuration(session.durationSeconds)} · ca. {formatUsd(session.estimatedApiCostUsd)} · {session.status === "completed" ? "Gemt samtale" : "Delvist gemt"}{session.closeReason ? ` · ${closeReasonLabel(session.closeReason, session.closeConfirmed)}` : ""}</small></span><span className="archive-arrow" aria-hidden="true">⌄</span></summary>
                       <p>{session.summary ?? "Ingen opsummering endnu. Du kan stadig læse samtalen herunder."}</p>
+                      {session.recap ? <div className="recap-details">
+                        {session.recap.progress.length > 0 && <p><strong>Det lykkedes:</strong> {session.recap.progress.join(" · ")}</p>}
+                        {session.recap.needsWork.length > 0 && <p><strong>Øv videre:</strong> {session.recap.needsWork.join(" · ")}</p>}
+                        {session.recap.nextStep && <p><strong>Næste skridt:</strong> {session.recap.nextStep}</p>}
+                      </div> : null}
                       <div className="archive-transcript">
                         {session.transcript.map((line, index) => <div className="archive-line" key={`${session.id}-${index}`}><strong>{line.speaker === "dig" ? "Dig" : "Tutor"}</strong><span>{line.text}</span></div>)}
                       </div>
@@ -1039,6 +1059,14 @@ function formatShortDate(value: string): string {
 
 function isWordDue(word: WordProgress): boolean {
   return !word.nextReviewAt || new Date(word.nextReviewAt).getTime() <= Date.now();
+}
+
+function wordStageLabel(word: WordProgress): string {
+  const stage = practiceStage(word);
+  if (stage === "introduced") return "Kun nævnt";
+  if (stage === "once") return "Ét vurderet forsøg";
+  if (stage === "secure") return "Sikker efter score";
+  return "Øvet flere gange";
 }
 
 function safeLiveEvent(value: unknown): LiveEvent | null {

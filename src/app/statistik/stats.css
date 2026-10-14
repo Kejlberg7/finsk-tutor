@@ -92,7 +92,8 @@
 .insights-wordscape { background: #fcfdf9; }
 .insights-wordstack { display: flex; width: 100%; height: 23px; overflow: hidden; margin: 25px 0 19px; border-radius: 999px; background: #e8ede6; }
 .insights-wordstack span { display: block; height: 100%; }
-.insights-wordstack .new, .insights-wordlegend i.new { background: #e2bf88; }
+.insights-wordstack .introduced, .insights-wordlegend i.introduced { background: #e8d4b5; }
+.insights-wordstack .once, .insights-wordlegend i.once { background: #e2bf88; }
 .insights-wordstack .building, .insights-wordlegend i.building { background: #94bd9a; }
 .insights-wordstack .secure, .insights-wordlegend i.secure { background: #2e7150; }
 .insights-wordlegend { display: grid; gap: 9px; }
