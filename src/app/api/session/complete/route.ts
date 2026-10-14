@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getSessionFromRequest } from "@/lib/auth";
 import { completePracticeSession } from "@/lib/learning";
 import { cleanFragments } from "@/lib/transcript";
+import { recordServerDiagnostic } from "@/lib/session-diagnostics-server";
 
 export const maxDuration = 60;
 
@@ -12,6 +13,7 @@ export async function POST(request: Request) {
 
   const body = (await request.json().catch(() => null)) as {
     sessionId?: unknown;
+    attemptId?: unknown;
     transcript?: unknown;
   } | null;
 
@@ -33,6 +35,9 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true, learning }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     console.error("Could not complete practice session", error);
+    await recordServerDiagnostic({ attemptId: body.attemptId, sessionId: body.sessionId,
+      eventType: "backend.complete_failed", code: error instanceof Error ? error.name : "unknown",
+      message: error instanceof Error ? error.message : null, phase: "analysis" });
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Kunne ikke gemme samtalen." },
       { status: 500, headers: { "Cache-Control": "no-store" } },

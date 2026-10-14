@@ -4,6 +4,8 @@ export type PracticeStat = {
   durationSeconds: number;
   estimatedCostUsd: number;
   status: string;
+  closeReason?: string | null;
+  closeConfirmed?: boolean;
 };
 
 export type ActivityDay = {

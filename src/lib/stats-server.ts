@@ -26,6 +26,8 @@ export async function getStatsData() {
         endedAt: practiceSessions.endedAt,
         voiceSeconds: practiceSessions.voiceSeconds,
         status: practiceSessions.status,
+        closeReason: practiceSessions.closeReason,
+        closeConfirmed: practiceSessions.closeConfirmed,
       }).from(practiceSessions)
         .where(and(isNotNull(practiceSessions.endedAt), isNotNull(practiceSessions.transcript)))
         .orderBy(desc(practiceSessions.startedAt)),
@@ -51,6 +53,8 @@ export async function getStatsData() {
         durationSeconds,
         estimatedCostUsd: Number((durationSeconds * 0.05 / 60 + (backendCost.get(row.id) ?? 0)).toFixed(4)),
         status: row.status,
+        closeReason: row.closeReason,
+        closeConfirmed: row.closeConfirmed === 1,
       };
     });
 

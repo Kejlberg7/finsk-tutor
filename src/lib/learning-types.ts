@@ -46,6 +46,8 @@ export type RecentSession = {
   estimatedApiCostUsd: number;
   summary: string | null;
   status: string;
+  closeReason: string | null;
+  closeConfirmed: boolean;
   transcript: TranscriptLine[];
 };
 

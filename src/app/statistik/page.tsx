@@ -6,6 +6,7 @@ import { getSession } from "@/lib/auth";
 import { formatDuration } from "@/lib/duration";
 import { getLearningSnapshot } from "@/lib/learning";
 import { getStatsData } from "@/lib/stats-server";
+import { closeReasonLabel } from "@/lib/session-diagnostics";
 import type { WordProgress } from "@/lib/learning-types";
 import "./stats.css";
 
@@ -202,7 +203,7 @@ export default async function StatsPage() {
           {data.sessions.length ? <ol className="insights-session-list">{data.sessions.slice(0, 8).map((session, index) => (
             <li key={session.id}>
               <span className="insights-session-index">{String(index + 1).padStart(2, "0")}</span>
-              <div className="insights-session-date"><strong>{formatCalendarDay(session.startedAt)}</strong><span>kl. {formatClock(session.startedAt)}{session.status !== "completed" ? " · delvist gemt" : ""}</span></div>
+              <div className="insights-session-date"><strong>{formatCalendarDay(session.startedAt)}</strong><span>kl. {formatClock(session.startedAt)}{session.status !== "completed" ? " · delvist gemt" : ""}{session.closeReason ? ` · ${closeReasonLabel(session.closeReason, Boolean(session.closeConfirmed))}` : ""}</span></div>
               <div className="insights-session-meter"><span><i style={{ width: `${Math.min(100, Math.max(3, session.durationSeconds / (30 * 60) * 100))}%` }} /></span><small>{formatDuration(session.durationSeconds)}</small></div>
               <strong className="insights-session-cost">{formatUsd(session.estimatedCostUsd)}</strong>
             </li>

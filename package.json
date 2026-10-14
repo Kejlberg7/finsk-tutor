@@ -9,6 +9,7 @@
     "lint": "eslint",
     "test": "tsx --test tests/*.test.ts",
     "tutor:context": "node --env-file=.env.local scripts/read-tutor-context.mjs",
+    "tutor:diagnostics": "node --env-file=.env.local scripts/read-tutor-diagnostics.mjs",
     "db:push": "node --env-file=.env.local ./node_modules/.bin/drizzle-kit push",
     "db:generate": "node --env-file=.env.local ./node_modules/.bin/drizzle-kit generate",
     "db:studio": "node --env-file=.env.local ./node_modules/.bin/drizzle-kit studio"

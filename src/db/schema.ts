@@ -52,6 +52,20 @@ export const practiceSessions = pgTable("practice_sessions", {
   status: text("status").notNull().default("started"),
   progressCursor: integer("progress_cursor").notNull().default(0),
   voiceSeconds: integer("voice_seconds").notNull().default(0),
+  closeReason: text("close_reason"),
+  closeConfirmed: integer("close_confirmed").notNull().default(0),
+});
+
+export const sessionDiagnostics = pgTable("session_diagnostics", {
+  id: text("id").primaryKey(),
+  attemptId: text("attempt_id").notNull(),
+  sessionId: integer("session_id"),
+  eventType: text("event_type").notNull(),
+  code: text("code"),
+  message: text("message"),
+  details: jsonb("details").$type<Record<string, string | number | boolean | null>>(),
+  occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 export const apiUsageEvents = pgTable("api_usage_events", {

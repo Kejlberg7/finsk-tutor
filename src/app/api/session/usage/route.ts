@@ -4,6 +4,7 @@ import { ensureDatabaseSchema, getDatabase, isDatabaseConfigured } from "@/db";
 import { apiUsageEvents, practiceSessions } from "@/db/schema";
 import { getSessionFromRequest } from "@/lib/auth";
 import { estimateResponseCostUsd, readResponseTokenUsage } from "@/lib/api-cost";
+import { recordServerDiagnostic } from "@/lib/session-diagnostics-server";
 
 export async function PATCH(request: Request) {
   if (!(await getSessionFromRequest(request))) {
@@ -11,7 +12,7 @@ export async function PATCH(request: Request) {
   }
   if (!isDatabaseConfigured()) return NextResponse.json({ error: "Hukommelsen er ikke sat op." }, { status: 503 });
   const body = (await request.json().catch(() => null)) as {
-    sessionId?: unknown; seconds?: unknown;
+    sessionId?: unknown; attemptId?: unknown; seconds?: unknown;
     responseUsage?: { responseId?: unknown; model?: unknown; usage?: unknown };
   } | null;
   if (!body || !Number.isInteger(body.sessionId) || typeof body.sessionId !== "number"
@@ -56,6 +57,9 @@ export async function PATCH(request: Request) {
     return NextResponse.json({ ok: true }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     console.error("Could not save voice API usage", error);
+    await recordServerDiagnostic({ attemptId: body.attemptId, sessionId: body.sessionId,
+      eventType: "backend.usage_failed", code: error instanceof Error ? error.name : "unknown",
+      message: error instanceof Error ? error.message : null, phase: "usage" });
     return NextResponse.json({ error: "Kunne ikke gemme API-forbruget." }, { status: 500 });
   }
 }

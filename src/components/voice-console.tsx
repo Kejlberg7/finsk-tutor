@@ -6,6 +6,9 @@ import { extractIdeaCues } from "@/lib/idea-cue";
 import { estimateResponseCostUsd, readResponseTokenUsage } from "@/lib/api-cost";
 import { sessionPacingUpdate } from "@/lib/session-pacing";
 import { shouldAutoResume } from "@/lib/session-continuity";
+import { flushSessionDiagnostics, reportSessionDiagnostic } from "@/lib/session-diagnostics-client";
+import type { DiagnosticDetails } from "@/lib/session-diagnostics";
+import { closeReasonLabel } from "@/lib/session-diagnostics";
 import { formatDuration } from "@/lib/duration";
 import type { IdeaNote, LearningSnapshot, RecentSession, TranscriptLine, WordProgress } from "@/lib/learning-types";
 
@@ -41,10 +44,10 @@ type LiveEvent = {
   delta?: string;
   start_ms?: number;
   end_ms?: number;
-  error?: { message?: string };
+  error?: { message?: string; code?: string; type?: string; param?: string; client_event_id?: string };
   event?: {
     type?: string;
-    response?: { id?: unknown; model?: unknown; usage?: unknown };
+    response?: { id?: unknown; model?: unknown; usage?: unknown; status?: string; status_details?: { reason?: string; error?: { code?: string; message?: string } } };
   };
   usage?: { seconds?: number };
   reason?: string;
@@ -79,16 +82,20 @@ export default function VoiceConsole() {
   const ideaTasksRef = useRef<Set<Promise<void>>>(new Set());
   const notedFeedbackRef = useRef<Set<string>>(new Set());
   const checkpointTimerRef = useRef<number | null>(null);
+  const heartbeatTimerRef = useRef<number | null>(null);
   const checkpointPromiseRef = useRef<Promise<void> | null>(null);
   const progressCursorRef = useRef(0);
   const appSessionIdRef = useRef<number | null>(null);
+  const attemptIdRef = useRef("");
   const finalisingRef = useRef(false);
+  const closeReasonRef = useRef<string | null>(null);
   const closeTimerRef = useRef<number | null>(null);
   const connectionTimerRef = useRef<number | null>(null);
   const reconnectTimerRef = useRef<number | null>(null);
   const reconnectAttemptsRef = useRef(0);
   const recoveringRef = useRef(false);
   const scheduleReconnectRef = useRef<(resumeTranscript: TranscriptLine[]) => void>(() => undefined);
+  const acquireWakeLockRef = useRef<() => Promise<void>>(async () => undefined);
   const wakeLockRef = useRef<WakeLockSentinel | null>(null);
   const wakeLockRequestRef = useRef<Promise<void> | null>(null);
   const connectedAtRef = useRef(0);
@@ -96,7 +103,7 @@ export default function VoiceConsole() {
   const savedVoiceUsageSecondsRef = useRef(0);
   const practiceStartedAtRef = useRef(0);
   const manualStopRef = useRef(false);
-  const finishRef = useRef<((reason: string) => void) | null>(null);
+  const finishRef = useRef<((reason: string, confirmed?: boolean) => void) | null>(null);
   const unmountedRef = useRef(false);
   const nextGoal = [5, 20, 50, 100, 200].find((goal) => learning.masteredWordCount < goal)
     ?? Math.ceil((learning.masteredWordCount + 1) / 100) * 100;
@@ -120,6 +127,12 @@ export default function VoiceConsole() {
     return matchesFilter && matchesSearch;
   });
 
+  function diagnose(eventType: string, code?: string | null, message?: string | null, details?: DiagnosticDetails | null,
+    sessionId = appSessionIdRef.current, attemptId = attemptIdRef.current) {
+    if (!attemptId) return;
+    reportSessionDiagnostic({ attemptId, sessionId, eventType, code, message, details });
+  }
+
   async function refreshHistory() {
     try {
       const response = await fetch("/api/history", { cache: "no-store", credentials: "same-origin" });
@@ -140,6 +153,7 @@ export default function VoiceConsole() {
 
   async function saveVoiceUsage(seconds: number) {
     const sessionId = appSessionIdRef.current;
+    const attemptId = attemptIdRef.current;
     const totalSeconds = Math.floor(seconds);
     if (!sessionId || !Number.isFinite(totalSeconds) || totalSeconds < 0
       || totalSeconds <= savedVoiceUsageSecondsRef.current) return;
@@ -148,33 +162,40 @@ export default function VoiceConsole() {
         method: "PATCH",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId, seconds: totalSeconds }),
+        signal: AbortSignal.timeout(15_000),
+        body: JSON.stringify({ sessionId, attemptId, seconds: totalSeconds }),
       });
-      if (!response.ok) throw new Error("Kunne ikke gemme API-forbruget.");
+      if (!response.ok) throw new Error(`Kunne ikke gemme API-forbruget (HTTP ${response.status}).`);
       if (appSessionIdRef.current === sessionId) savedVoiceUsageSecondsRef.current = totalSeconds;
-    } catch {
-      // The final usage snapshot is attempted again when the session closes.
+    } catch (error) {
+      diagnose("app.usage_failed", error instanceof Error ? error.name : "unknown", error instanceof Error ? error.message : null,
+        { phase: "voice", voiceSeconds: totalSeconds }, sessionId, attemptId);
     }
   }
 
   async function saveResponseUsage(responseUsage: { responseId: string; model: string; usage: unknown }) {
     const sessionId = appSessionIdRef.current;
+    const attemptId = attemptIdRef.current;
     const usage = readResponseTokenUsage(responseUsage.usage);
     if (!sessionId || !usage || estimateResponseCostUsd(responseUsage.model, usage) === null) return;
     try {
-      await fetch("/api/session/usage", {
+      const response = await fetch("/api/session/usage", {
         method: "PATCH",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId, responseUsage }),
+        signal: AbortSignal.timeout(15_000),
+        body: JSON.stringify({ sessionId, attemptId, responseUsage }),
       });
-    } catch {
-      // Usage is also recorded for the tutor's server-side analysis responses.
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    } catch (error) {
+      diagnose("app.usage_failed", error instanceof Error ? error.name : "unknown", error instanceof Error ? error.message : null,
+        { phase: "response", responseId: responseUsage.responseId }, sessionId, attemptId);
     }
   }
 
   useEffect(() => {
     unmountedRef.current = false;
+    void flushSessionDiagnostics();
     void fetch("/api/learning", { cache: "no-store", credentials: "same-origin" })
       .then(async (response) => {
         if (!response.ok) throw new Error("Kunne ikke hente læringsplanen.");
@@ -191,9 +212,13 @@ export default function VoiceConsole() {
       .then((items) => { setIdeas(items); setIdeasError(""); })
       .catch(() => setIdeasError("Kunne ikke hente idéer lige nu."));
     const onVisibilityChange = () => {
+      if (peerRef.current) diagnose("client.visibility", null, null, {
+        visibility: document.visibilityState, online: navigator.onLine,
+        peerState: peerRef.current.connectionState, channelState: channelRef.current?.readyState ?? "missing",
+      });
       if (document.visibilityState !== "visible" || manualStopRef.current) return;
       if (peerRef.current && peerRef.current.connectionState !== "closed") {
-        void acquireWakeLock();
+        void acquireWakeLockRef.current();
         if (peerRef.current.connectionState === "failed" || peerRef.current.connectionState === "disconnected"
           || channelRef.current?.readyState === "closed") finishRef.current?.("connection_lost");
       } else if (recoveringRef.current && !reconnectTimerRef.current) {
@@ -201,20 +226,42 @@ export default function VoiceConsole() {
       }
     };
     const onOnline = () => {
+      void flushSessionDiagnostics();
       if (recoveringRef.current && !reconnectTimerRef.current) scheduleReconnectRef.current([...transcriptRef.current]);
+    };
+    const onPageHide = () => {
+      if (peerRef.current) diagnose("client.pagehide", null, null, {
+        peerState: peerRef.current.connectionState, channelState: channelRef.current?.readyState ?? "missing",
+      });
+    };
+    const onUnhandledError = (event: ErrorEvent) => {
+      if (peerRef.current) diagnose("app.unhandled_error", event.error instanceof Error ? event.error.name : "unknown", event.message);
+    };
+    const onUnhandledRejection = (event: PromiseRejectionEvent) => {
+      if (!peerRef.current) return;
+      const reason = event.reason;
+      diagnose("app.unhandled_rejection", reason instanceof Error ? reason.name : "unknown",
+        reason instanceof Error ? reason.message : typeof reason === "string" ? reason : null);
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
     window.addEventListener("pageshow", onVisibilityChange);
     window.addEventListener("online", onOnline);
+    window.addEventListener("pagehide", onPageHide);
+    window.addEventListener("error", onUnhandledError);
+    window.addEventListener("unhandledrejection", onUnhandledRejection);
     return () => {
       document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener("pageshow", onVisibilityChange);
       window.removeEventListener("online", onOnline);
+      window.removeEventListener("pagehide", onPageHide);
+      window.removeEventListener("error", onUnhandledError);
+      window.removeEventListener("unhandledrejection", onUnhandledRejection);
       if (closeTimerRef.current) window.clearTimeout(closeTimerRef.current);
       if (connectionTimerRef.current) window.clearTimeout(connectionTimerRef.current);
       if (reconnectTimerRef.current) window.clearTimeout(reconnectTimerRef.current);
       if (ideaTimerRef.current) window.clearTimeout(ideaTimerRef.current);
       if (checkpointTimerRef.current) window.clearInterval(checkpointTimerRef.current);
+      if (heartbeatTimerRef.current) window.clearInterval(heartbeatTimerRef.current);
       unmountedRef.current = true;
       void releaseWakeLock();
       microphoneRef.current?.getTracks().forEach((track) => track.stop());
@@ -223,6 +270,7 @@ export default function VoiceConsole() {
   }, []);
 
   useEffect(() => { scheduleReconnectRef.current = scheduleReconnect; });
+  useEffect(() => { acquireWakeLockRef.current = acquireWakeLock; });
 
   async function acquireWakeLock() {
     if (wakeLockRef.current || wakeLockRequestRef.current || document.visibilityState !== "visible"
@@ -243,7 +291,8 @@ export default function VoiceConsole() {
         lock.addEventListener("release", () => {
           if (wakeLockRef.current === lock) wakeLockRef.current = null;
         });
-      } catch {
+      } catch (error) {
+        diagnose("app.wake_lock_failed", error instanceof Error ? error.name : "unknown", error instanceof Error ? error.message : null);
         setWakeNotice("Skærmen kunne ikke holdes vågen. Forbindelsen forsøges stadig genoprettet ved afbrydelse.");
       }
     })();
@@ -323,6 +372,8 @@ export default function VoiceConsole() {
         content: "Your app-feedback note was saved for later. Briefly acknowledge that it is saved, then continue the Finnish lesson.",
       });
     } catch (error) {
+      diagnose("app.idea_failed", error instanceof Error ? error.name : "unknown", error instanceof Error ? error.message : null,
+        { httpStatus: error instanceof Error && /^HTTP (\d+)/.test(error.message) ? Number(error.message.match(/^HTTP (\d+)/)?.[1]) : null }, sessionId);
       notedFeedbackRef.current.delete(key);
       setIdeaMessage(error instanceof Error ? `Feedback blev ikke gemt: ${error.message}` : "Feedback blev ikke gemt.");
       if (explicit && appSessionIdRef.current === sessionId) sendEvent({
@@ -353,6 +404,7 @@ export default function VoiceConsole() {
 
   async function checkpoint() {
     const sessionId = appSessionIdRef.current;
+    const attemptId = attemptIdRef.current;
     if (!sessionId || checkpointPromiseRef.current || rawTranscriptRef.current.length <= progressCursorRef.current) return;
     const fragments = [...rawTranscriptRef.current];
     const task = (async () => {
@@ -363,7 +415,7 @@ export default function VoiceConsole() {
           credentials: "same-origin",
           headers: { "Content-Type": "application/json" },
           signal: AbortSignal.timeout(55_000),
-          body: JSON.stringify({ sessionId, fragments }),
+          body: JSON.stringify({ sessionId, attemptId, fragments }),
         });
         const payload: unknown = await response.json().catch(() => null);
         if (!response.ok) throw new Error(apiErrorMessage(payload));
@@ -391,6 +443,8 @@ export default function VoiceConsole() {
         }
         void refreshHistory();
       } catch (error) {
+        diagnose("app.checkpoint_failed", error instanceof Error ? error.name : "unknown", error instanceof Error ? error.message : null,
+          { phase: "progress" }, sessionId, attemptId);
         if (appSessionIdRef.current === sessionId) setProgressMessage(error instanceof Error ? `Ordstatus kunne ikke gemmes endnu: ${error.message}` : "Ordstatus kunne ikke gemmes endnu.");
       }
     })();
@@ -406,6 +460,8 @@ export default function VoiceConsole() {
     connectionTimerRef.current = null;
     if (checkpointTimerRef.current) window.clearInterval(checkpointTimerRef.current);
     checkpointTimerRef.current = null;
+    if (heartbeatTimerRef.current) window.clearInterval(heartbeatTimerRef.current);
+    heartbeatTimerRef.current = null;
     void releaseWakeLock();
     setWakeNotice("");
     microphoneRef.current?.getTracks().forEach((track) => track.stop());
@@ -424,6 +480,7 @@ export default function VoiceConsole() {
     if (manualStopRef.current || unmountedRef.current || reconnectTimerRef.current || peerRef.current) return;
     recoveringRef.current = true;
     if (reconnectAttemptsRef.current >= 8) {
+      diagnose("client.reconnect_exhausted", "max_attempts", null, { attempt: reconnectAttemptsRef.current });
       setConnecting(false);
       setStatus("Forbindelsen blev afbrudt. Automatisk genoprettelse mislykkedes — genoptag, når det er sikkert.");
       return;
@@ -434,6 +491,7 @@ export default function VoiceConsole() {
       return;
     }
     const attempt = ++reconnectAttemptsRef.current;
+    diagnose("client.reconnect_scheduled", null, null, { attempt, online: navigator.onLine });
     setConnecting(true);
     setStatus("Forbindelsen blev afbrudt. Genoptager samtalen automatisk…");
     reconnectTimerRef.current = window.setTimeout(() => {
@@ -443,6 +501,11 @@ export default function VoiceConsole() {
   }
 
   async function start(resumeTranscript: TranscriptLine[] = [], automatic = false) {
+    const attemptId = crypto.randomUUID();
+    attemptIdRef.current = attemptId;
+    diagnose("client.start", automatic ? "automatic_resume" : "manual_start", null, {
+      online: navigator.onLine, visibility: document.visibilityState, browser: navigator.userAgent.slice(0, 160),
+    }, null);
     if (!automatic) {
       manualStopRef.current = false;
       recoveringRef.current = false;
@@ -454,6 +517,7 @@ export default function VoiceConsole() {
       setTranscript([]);
       transcriptRef.current = [];
     }
+    closeReasonRef.current = null;
     setStatus(automatic ? "Genoptager samtalen…" : "Forbinder…");
     setConnecting(true);
     rawTranscriptRef.current = [];
@@ -467,24 +531,40 @@ export default function VoiceConsole() {
     if (!automatic) setSaving(false);
 
     let finished = false;
+    let phase = "peer_creation";
     try {
       const peer = new RTCPeerConnection();
       peerRef.current = peer;
       peer.ontrack = (event) => {
         if (!audioRef.current) return;
         audioRef.current.srcObject = new MediaStream([event.track]);
-        void audioRef.current.play().catch(() => setStatus("Tryk på afspilningsknappen for at høre tutorens stemme."));
+        void audioRef.current.play().catch((error) => {
+          diagnose("media.playback_failed", error instanceof Error ? error.name : "unknown", error instanceof Error ? error.message : null);
+          setStatus("Tryk på afspilningsknappen for at høre tutorens stemme.");
+        });
       };
 
+      phase = "microphone";
       const microphone = await navigator.mediaDevices.getUserMedia({ audio: true });
       microphoneRef.current = microphone;
-      microphone.getAudioTracks().forEach((track) => peer.addTrack(track, microphone));
+      microphone.getAudioTracks().forEach((track) => {
+        peer.addTrack(track, microphone);
+        track.onended = () => { if (!finished) diagnose("media.track_ended", "microphone_ended", null, { peerState: peer.connectionState }); };
+        track.onmute = () => { if (!finished) diagnose("media.track_muted", "microphone_muted", null, { peerState: peer.connectionState }); };
+      });
 
+      phase = "data_channel";
       const channel = peer.createDataChannel("oai-events");
       channelRef.current = channel;
-      const finish = (reason: string) => {
+      const finish = (reason: string, confirmed = false) => {
         if (finished || unmountedRef.current) return;
         finished = true;
+        closeReasonRef.current = reason;
+        diagnose("client.finish", reason, null, {
+          reason, closeConfirmed: confirmed, peerState: peer.connectionState,
+          iceState: peer.iceConnectionState, channelState: channel.readyState,
+          elapsedSeconds: connectedAtRef.current ? Math.max(0, Math.round((Date.now() - connectedAtRef.current) / 1_000)) : 0,
+        });
         void flushIdea();
         const context = transcriptRef.current.length ? [...transcriptRef.current] : resumeTranscript;
         const recover = shouldAutoResume(reason, manualStopRef.current);
@@ -501,12 +581,23 @@ export default function VoiceConsole() {
         }
       };
       finishRef.current = finish;
+      channel.onopen = () => diagnose("transport.channel_state", "open", null, { channelState: channel.readyState });
+      channel.onerror = () => diagnose("transport.channel_state", "error", null, {
+        channelState: channel.readyState, peerState: peer.connectionState,
+      });
       channel.onclose = () => {
+        if (!finished) diagnose("transport.channel_state", "closed", null, {
+          channelState: channel.readyState, peerState: peer.connectionState,
+        });
         if (!finished && !connectionTimerRef.current) {
           connectionTimerRef.current = window.setTimeout(() => finish("connection_lost"), 1_500);
         }
       };
       peer.onconnectionstatechange = () => {
+        if (!finished) diagnose("transport.peer_state", peer.connectionState, null, {
+          peerState: peer.connectionState, iceState: peer.iceConnectionState, channelState: channel.readyState,
+          online: navigator.onLine, visibility: document.visibilityState,
+        });
         if (peer.connectionState === "connected" && channel.readyState === "open" && connectionTimerRef.current) {
           window.clearTimeout(connectionTimerRef.current);
           connectionTimerRef.current = null;
@@ -515,10 +606,16 @@ export default function VoiceConsole() {
           connectionTimerRef.current = window.setTimeout(() => finish("connection_lost"), peer.connectionState === "disconnected" ? 7_000 : 1_500);
         }
       };
+      peer.oniceconnectionstatechange = () => {
+        if (!finished && ["disconnected", "failed", "closed"].includes(peer.iceConnectionState)) {
+          diagnose("transport.ice_state", peer.iceConnectionState, null, { peerState: peer.connectionState });
+        }
+      };
       channel.onmessage = (message) => {
         const event = safeLiveEvent(message.data);
         if (!event) return;
         if (event.type === "session.started") {
+          diagnose("live.session_started", null, null, { peerState: peer.connectionState, channelState: channel.readyState });
           recoveringRef.current = false;
           reconnectAttemptsRef.current = 0;
           setStatus("Forbundet — tal bare.");
@@ -537,6 +634,13 @@ export default function VoiceConsole() {
         if (event.type === "response.event" && ["response.completed", "response.failed", "response.incomplete"].includes(event.event?.type ?? "")) {
           setStatus("Forbundet — tal bare.");
         }
+        if (event.type === "response.event" && ["response.failed", "response.incomplete"].includes(event.event?.type ?? "")) {
+          const problem = event.event?.response;
+          diagnose("live.response_problem", event.event?.type ?? "unknown", problem?.status_details?.error?.message ?? null, {
+            responseId: typeof problem?.id === "string" ? problem.id : "unknown",
+            responseStatus: problem?.status ?? "unknown", reason: problem?.status_details?.reason ?? "unknown",
+          });
+        }
         const completedResponse = event.event?.response;
         if (event.type === "response.event" && event.event?.type === "response.completed"
           && typeof completedResponse?.id === "string" && typeof completedResponse.model === "string") {
@@ -550,31 +654,42 @@ export default function VoiceConsole() {
         }
         if (event.type === "session.closed") {
           if (typeof event.usage?.seconds === "number") lastVoiceUsageSecondsRef.current = Math.max(lastVoiceUsageSecondsRef.current, event.usage.seconds);
-          finish(event.reason ?? "connection_lost");
+          diagnose("live.session_closed", event.reason ?? "unknown", null, {
+            reason: event.reason ?? "unknown", voiceSeconds: event.usage?.seconds ?? null,
+            peerState: peer.connectionState, channelState: channel.readyState,
+          });
+          finish(event.reason ?? "connection_lost", true);
         }
         if (event.type === "session.input_transcript.delta") updateTranscript("dig", event);
         if (event.type === "session.output_transcript.delta") updateTranscript("tutor", event);
-        if (event.type === "error" && event.error?.message) setStatus(event.error.message);
+        if (event.type === "error") {
+          diagnose("live.error", event.error?.code ?? event.error?.type ?? "unknown", event.error?.message ?? null, {
+            parameter: event.error?.param ?? null, clientEventId: event.error?.client_event_id ?? null,
+          });
+          if (event.error?.message) setStatus(event.error.message);
+        }
       };
 
+      phase = "offer";
       const offer = await peer.createOffer();
       await peer.setLocalDescription(offer);
       await waitForIce(peer);
       const sdp = peer.localDescription?.sdp;
       if (!sdp) throw new Error("Mangler lokal WebRTC-beskrivelse.");
 
+      phase = "session_api";
       const response = await fetch("/api/session", {
         method: "POST",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          sdp,
+          sdp, attemptId,
           ...(automatic ? { resumeTranscript: resumeTranscript.slice(-30).map((line) => ({ speaker: line.speaker, text: line.text.slice(-600) })) } : {}),
         }),
       });
       if (!response.ok) {
         const payload: unknown = await response.json().catch(() => null);
-        throw new Error(apiErrorMessage(payload));
+        throw new Error(`${apiErrorMessage(payload)} (HTTP ${response.status})`);
       }
       const result = await response.json() as {
         transport?: { sdp?: string };
@@ -584,9 +699,11 @@ export default function VoiceConsole() {
       if (!result.transport?.sdp) throw new Error("OpenAI returnerede ikke et SDP-svar.");
       if (manualStopRef.current || unmountedRef.current) throw new Error("Samtalen blev afbrudt under opstart.");
       appSessionIdRef.current = result.app_session_id ?? null;
+      diagnose("client.session_created", null, null, { httpStatus: response.status, online: navigator.onLine });
       lastVoiceUsageSecondsRef.current = 0;
       savedVoiceUsageSecondsRef.current = 0;
       if (result.learning) setLearning(result.learning);
+      phase = "remote_description";
       await peer.setRemoteDescription({ type: "answer", sdp: result.transport.sdp });
       connectedAtRef.current = Date.now();
       if (!practiceStartedAtRef.current) practiceStartedAtRef.current = connectedAtRef.current;
@@ -594,7 +711,15 @@ export default function VoiceConsole() {
       setConnecting(false);
       void acquireWakeLock();
       checkpointTimerRef.current = window.setInterval(() => { void checkpoint(); }, 150_000);
+      heartbeatTimerRef.current = window.setInterval(() => diagnose("client.heartbeat", null, null, {
+        peerState: peer.connectionState, iceState: peer.iceConnectionState,
+        channelState: channel.readyState, online: navigator.onLine, visibility: document.visibilityState,
+        elapsedSeconds: Math.round((Date.now() - connectedAtRef.current) / 1_000),
+      }), 60_000);
     } catch (error) {
+      diagnose("client.start_failed", error instanceof Error ? error.name : "unknown", error instanceof Error ? error.message : null, {
+        phase, online: navigator.onLine, peerState: peerRef.current?.connectionState ?? "missing",
+      });
       finished = true;
       closeConnection();
       if (automatic && !manualStopRef.current) scheduleReconnect(resumeTranscript);
@@ -610,8 +735,10 @@ export default function VoiceConsole() {
     setStatus("Afslutter og gemmer samtalen…");
     void flushIdea();
     if (channelRef.current?.readyState === "open") {
+      diagnose("client.close_requested", null, null, { channelState: channelRef.current.readyState });
       sendEvent({ type: "session.close" });
       closeTimerRef.current = window.setTimeout(() => {
+        diagnose("client.close_timeout", "no_session_closed", null, { elapsedSeconds: 8 });
         finishRef.current?.("close_requested");
       }, 8_000);
       return;
@@ -632,6 +759,7 @@ export default function VoiceConsole() {
     finalisingRef.current = true;
     if (!background) setSaving(true);
     const sessionId = appSessionIdRef.current;
+    const attemptId = attemptIdRef.current;
     const finalTranscript = [...rawTranscriptRef.current];
     const pendingCheckpoint = checkpointPromiseRef.current;
     const pendingIdeas = [...ideaTasksRef.current];
@@ -654,7 +782,8 @@ export default function VoiceConsole() {
         method: "POST",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId, transcript: finalTranscript }),
+        signal: AbortSignal.timeout(65_000),
+        body: JSON.stringify({ sessionId, attemptId, transcript: finalTranscript }),
       });
       const payload: unknown = await response.json().catch(() => null);
       if (!response.ok) throw new Error(apiErrorMessage(payload));
@@ -662,8 +791,12 @@ export default function VoiceConsole() {
       if (nextLearning && (appSessionIdRef.current === sessionId || !background)) setLearning(nextLearning);
       void refreshHistory();
       void refreshIdeas();
-      if (!background) setStatus("Gemt — næste samtale fortsætter ud fra det, du øvede.");
+      if (!background) setStatus(closeReasonRef.current === "content"
+        ? "Samtalen blev stoppet af sikkerhedshensyn, men er gemt."
+        : "Gemt — næste samtale fortsætter ud fra det, du øvede.");
     } catch (error) {
+      diagnose("app.save_failed", error instanceof Error ? error.name : "unknown", error instanceof Error ? error.message : null,
+        { phase: "complete" }, sessionId, attemptId);
       if (background) setProgressMessage(error instanceof Error ? `En afbrudt samtaledel blev ikke gemt: ${error.message}` : "En afbrudt samtaledel blev ikke gemt.");
       else setStatus(error instanceof Error ? `Samtalen sluttede, men blev ikke gemt: ${error.message}` : "Samtalen sluttede, men blev ikke gemt.");
     } finally {
@@ -842,7 +975,7 @@ export default function VoiceConsole() {
                 <div className="archive-list">
                   {history.map((session) => (
                     <details className="archive-item" key={session.id}>
-                      <summary><span><strong>{formatDate(session.startedAt)}</strong><small>{formatDuration(session.durationSeconds)} · ca. {formatUsd(session.estimatedApiCostUsd)} · {session.status === "completed" ? "Gemt samtale" : "Delvist gemt"}</small></span><span className="archive-arrow" aria-hidden="true">⌄</span></summary>
+                      <summary><span><strong>{formatDate(session.startedAt)}</strong><small>{formatDuration(session.durationSeconds)} · ca. {formatUsd(session.estimatedApiCostUsd)} · {session.status === "completed" ? "Gemt samtale" : "Delvist gemt"}{session.closeReason ? ` · ${closeReasonLabel(session.closeReason, session.closeConfirmed)}` : ""}</small></span><span className="archive-arrow" aria-hidden="true">⌄</span></summary>
                       <p>{session.summary ?? "Ingen opsummering endnu. Du kan stadig læse samtalen herunder."}</p>
                       <div className="archive-transcript">
                         {session.transcript.map((line, index) => <div className="archive-line" key={`${session.id}-${index}`}><strong>{line.speaker === "dig" ? "Dig" : "Tutor"}</strong><span>{line.text}</span></div>)}

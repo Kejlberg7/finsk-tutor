@@ -21,6 +21,8 @@ export async function GET(request: Request) {
       voiceSeconds: practiceSessions.voiceSeconds,
       summary: practiceSessions.summary,
       status: practiceSessions.status,
+      closeReason: practiceSessions.closeReason,
+      closeConfirmed: practiceSessions.closeConfirmed,
       transcript: practiceSessions.transcript,
     }).from(practiceSessions).where(isNotNull(practiceSessions.transcript))
       .orderBy(desc(practiceSessions.startedAt)).limit(8);
@@ -41,6 +43,8 @@ export async function GET(request: Request) {
       estimatedApiCostUsd: Number((durationSeconds * 0.05 / 60 + (backendCosts.get(row.id) ?? 0)).toFixed(4)),
       summary: row.summary,
       status: row.status,
+      closeReason: row.closeReason,
+      closeConfirmed: row.closeConfirmed === 1,
       transcript: Array.isArray(row.transcript) ? compactTranscript(cleanFragments(row.transcript)) : [],
       };
     });

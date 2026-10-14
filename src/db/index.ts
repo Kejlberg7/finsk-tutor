@@ -104,6 +104,23 @@ async function createSchema(): Promise<void> {
   await sqlClient.unsafe(`ALTER TABLE practice_sessions ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'started'`);
   await sqlClient.unsafe(`ALTER TABLE practice_sessions ADD COLUMN IF NOT EXISTS progress_cursor integer NOT NULL DEFAULT 0`);
   await sqlClient.unsafe(`ALTER TABLE practice_sessions ADD COLUMN IF NOT EXISTS voice_seconds integer NOT NULL DEFAULT 0`);
+  await sqlClient.unsafe(`ALTER TABLE practice_sessions ADD COLUMN IF NOT EXISTS close_reason text`);
+  await sqlClient.unsafe(`ALTER TABLE practice_sessions ADD COLUMN IF NOT EXISTS close_confirmed integer NOT NULL DEFAULT 0`);
+  await sqlClient.unsafe(`
+    CREATE TABLE IF NOT EXISTS session_diagnostics (
+      id text PRIMARY KEY,
+      attempt_id text NOT NULL,
+      session_id integer,
+      event_type text NOT NULL,
+      code text,
+      message text,
+      details jsonb,
+      occurred_at timestamptz NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now()
+    )
+  `);
+  await sqlClient.unsafe(`CREATE INDEX IF NOT EXISTS session_diagnostics_created_idx ON session_diagnostics (created_at DESC)`);
+  await sqlClient.unsafe(`CREATE INDEX IF NOT EXISTS session_diagnostics_session_idx ON session_diagnostics (session_id, occurred_at DESC)`);
   await sqlClient.unsafe(`
     CREATE TABLE IF NOT EXISTS api_usage_events (
       id serial PRIMARY KEY,

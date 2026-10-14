@@ -4,13 +4,17 @@ import { attachLiveSessionId, beginPracticeSession, getTutorInstructions } from 
 import { buildResumeInput } from "@/lib/session-continuity";
 import { cleanFragments } from "@/lib/transcript";
 import type { TranscriptLine } from "@/lib/learning-types";
+import { parseDiagnosticEvent } from "@/lib/session-diagnostics";
+import { saveDiagnosticEvents } from "@/lib/session-diagnostics-server";
 
 export async function POST(request: Request) {
   if (!(await getSessionFromRequest(request))) {
     return NextResponse.json({ error: "Ikke logget ind." }, { status: 401 });
   }
 
-  const body = (await request.json().catch(() => null)) as { sdp?: unknown; resumeTranscript?: unknown } | null;
+  const body = (await request.json().catch(() => null)) as { sdp?: unknown; resumeTranscript?: unknown; attemptId?: unknown } | null;
+  const attemptId = typeof body?.attemptId === "string" && /^[0-9a-f-]{36}$/i.test(body.attemptId)
+    ? body.attemptId : crypto.randomUUID();
   if (typeof body?.sdp !== "string" || !body.sdp.trim()) {
     return NextResponse.json({ error: "Mangler SDP-offer." }, { status: 400 });
   }
@@ -26,12 +30,20 @@ export async function POST(request: Request) {
 
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
+    await recordStartFailure(attemptId, "configuration", "missing_api_key", "OPENAI_API_KEY mangler på serveren.");
     return NextResponse.json({ error: "OPENAI_API_KEY mangler på serveren." }, { status: 503 });
   }
 
-  const { instructions, snapshot } = await getTutorInstructions();
+  let tutor;
+  try { tutor = await getTutorInstructions(); }
+  catch (error) {
+    await recordStartFailure(attemptId, "learning_context", "context_failed", error instanceof Error ? error.message : null);
+    return NextResponse.json({ error: "Kunne ikke hente læringsplanen." }, { status: 500 });
+  }
+  const { instructions, snapshot } = tutor;
 
-  const response = await fetch("https://api.openai.com/v1/live/sessions", {
+  let response: Response;
+  try { response = await fetch("https://api.openai.com/v1/live/sessions", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${apiKey}`,
@@ -62,14 +74,26 @@ When recent conversation shows a block has been practised, choose a new connecte
       transport: { type: "webrtc", sdp: body.sdp },
     }),
     cache: "no-store",
-  });
+  }); } catch (error) {
+    await recordStartFailure(attemptId, "openai_request", "network_error", error instanceof Error ? error.message : null);
+    return NextResponse.json({ error: "Forbindelsen til OpenAI mislykkedes." }, { status: 502 });
+  }
 
   const result: unknown = await response.json().catch(() => null);
   if (!response.ok) {
+    await recordStartFailure(attemptId, "openai_response", "http_error", apiErrorMessage(result), response.status,
+      response.headers.get("x-request-id"));
     return NextResponse.json(
       { error: apiErrorMessage(result) },
       { status: response.status, headers: { "Cache-Control": "no-store" } },
     );
+  }
+
+  if (!result || typeof result !== "object" || !("transport" in result)
+    || typeof (result as { transport?: { sdp?: unknown } }).transport?.sdp !== "string") {
+    await recordStartFailure(attemptId, "openai_response", "missing_sdp", "OpenAI returnerede ikke et SDP-svar.", response.status,
+      response.headers.get("x-request-id"));
+    return NextResponse.json({ error: "OpenAI returnerede ikke et SDP-svar." }, { status: 502 });
   }
 
   const liveSessionId = result && typeof result === "object" && "session" in result
@@ -77,6 +101,7 @@ When recent conversation shows a block has been practised, choose a new connecte
     : null;
   const appSessionId = await beginPracticeSession();
   await attachLiveSessionId(appSessionId, typeof liveSessionId === "string" ? liveSessionId : null);
+  if (!appSessionId) await recordStartFailure(attemptId, "database", "session_not_saved", "Live-sessionen startede, men samtaledelen kunne ikke oprettes.");
 
   return NextResponse.json({
     ...(result && typeof result === "object" ? result : {}),
@@ -86,6 +111,16 @@ When recent conversation shows a block has been practised, choose a new connecte
     status: response.status,
     headers: { "Cache-Control": "no-store" },
   });
+}
+
+async function recordStartFailure(attemptId: string, phase: string, code: string, message: string | null, httpStatus?: number, responseId?: string | null) {
+  const event = parseDiagnosticEvent({
+    id: crypto.randomUUID(), attemptId, sessionId: null, eventType: "backend.session_create_failed",
+    code, message, details: { phase, ...(httpStatus ? { httpStatus } : {}), ...(responseId ? { responseId } : {}) }, occurredAt: new Date().toISOString(),
+  });
+  if (!event) return;
+  try { await saveDiagnosticEvents([event]); }
+  catch (error) { console.error("Could not record session creation failure", error); }
 }
 
 function apiErrorMessage(payload: unknown): string {

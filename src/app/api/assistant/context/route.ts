@@ -1,7 +1,7 @@
 import { desc, inArray, isNotNull } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { ensureDatabaseSchema, getDatabase, isDatabaseConfigured } from "@/db";
-import { apiUsageEvents, ideaNotes, practiceSessions } from "@/db/schema";
+import { apiUsageEvents, ideaNotes, practiceSessions, sessionDiagnostics } from "@/db/schema";
 import { isAuthorizedTutorReadRequest } from "@/lib/tutor-read-api-auth";
 import type { RecentSession } from "@/lib/learning-types";
 import { cleanFragments, compactTranscript } from "@/lib/transcript";
@@ -21,6 +21,7 @@ export async function GET(request: Request) {
   const url = new URL(request.url);
   const sessionLimit = readBoundedLimit(url.searchParams.get("sessions"), 5, 20);
   const noteLimit = readBoundedLimit(url.searchParams.get("notes"), 50, 100);
+  const diagnosticLimit = readBoundedLimit(url.searchParams.get("diagnostics"), 100, 500);
 
   try {
     await ensureDatabaseSchema();
@@ -32,6 +33,8 @@ export async function GET(request: Request) {
       voiceSeconds: practiceSessions.voiceSeconds,
       summary: practiceSessions.summary,
       status: practiceSessions.status,
+      closeReason: practiceSessions.closeReason,
+      closeConfirmed: practiceSessions.closeConfirmed,
       transcript: practiceSessions.transcript,
     }).from(practiceSessions).where(isNotNull(practiceSessions.transcript))
       .orderBy(desc(practiceSessions.startedAt)).limit(sessionLimit);
@@ -58,6 +61,8 @@ export async function GET(request: Request) {
         estimatedApiCostUsd: Number((durationSeconds * 0.05 / 60 + (backendCosts.get(row.id) ?? 0)).toFixed(4)),
         summary: row.summary,
         status: row.status,
+        closeReason: row.closeReason,
+        closeConfirmed: row.closeConfirmed === 1,
         transcript: Array.isArray(row.transcript) ? compactTranscript(cleanFragments(row.transcript)) : [],
       };
     });
@@ -71,9 +76,22 @@ export async function GET(request: Request) {
       createdAt: ideaNotes.createdAt,
     }).from(ideaNotes).orderBy(desc(ideaNotes.createdAt)).limit(noteLimit);
 
+    const diagnostics = await db.select({
+      id: sessionDiagnostics.id,
+      attemptId: sessionDiagnostics.attemptId,
+      sessionId: sessionDiagnostics.sessionId,
+      eventType: sessionDiagnostics.eventType,
+      code: sessionDiagnostics.code,
+      message: sessionDiagnostics.message,
+      details: sessionDiagnostics.details,
+      occurredAt: sessionDiagnostics.occurredAt,
+      receivedAt: sessionDiagnostics.createdAt,
+    }).from(sessionDiagnostics).orderBy(desc(sessionDiagnostics.occurredAt)).limit(diagnosticLimit);
+
     return NextResponse.json({
       generatedAt: new Date().toISOString(),
       sessions,
+      diagnostics,
       notes: notes.map((note) => ({
         id: note.id,
         sessionId: note.sessionId,
