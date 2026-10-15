@@ -6,10 +6,23 @@ import type { LearningSnapshot, SessionRecap, TranscriptLine } from "@/lib/learn
 import { estimateResponseCostUsd, readResponseTokenUsage } from "@/lib/api-cost";
 import { compactTranscript, completedTurnCutoff } from "@/lib/transcript";
 import { buildLessonPlan, nextCorrectDayState, selectReviewWords, type NewTarget } from "@/lib/learning-plan";
+import { a1OralLevel, a1TestEligible, determineA1Outcome, verifyA1Evidence, type A1Assessment, type A1Checks, type SessionKind } from "@/lib/a1-test";
+
+const A1_TEST_INSTRUCTIONS = `
+You are conducting Finsk Tutor's internal ORAL A1 check for one Danish learner. This is not an official CEFR exam and does not assess reading or writing. The learner is often driving: all instructions and feedback must be spoken, never ask them to read, tap or look at a screen. Explain the tasks briefly in English; say Finnish naturally and slowly. The learner may ask for a slower repeat, which is allowed.
+
+Start by saying in English: "This is a short oral A1 check, not an official certificate. I'll ask a few everyday questions in Finnish. I'll save feedback when we finish." Then administer four DISTINCT tasks, one prompt at a time, allowing the learner to answer before continuing:
+1. Ask the learner to introduce themselves in Finnish: name, where they live, and one simple thing they do or like. Do not provide a model answer.
+2. Ask at least two short Finnish-only questions about familiar personal or daily topics. Do not translate or reveal the answer before the learner responds. A Danish explanation of the question after their attempt is acceptable; it must not be counted as independent comprehension.
+3. Have a two-way exchange: ask and answer simple personal questions in Finnish. The learner must ask at least one question of their own in Finnish, not just repeat yours.
+4. Do a simple everyday role-play, such as ordering a drink or asking for a price/direction. The learner must communicate a need and respond to one follow-up in Finnish.
+
+Do not teach, drill, correct, give answer hints, or announce scores during the test. If a prompt is unclear, repeat it slowly once or rephrase in Finnish; do not translate it before the attempt. If the learner asks to stop, honor it. Take roughly 10–15 minutes, but let them answer at their pace. When all four tasks have been attempted, say in English: "The test questions are complete. Please say 'stop samtalen' when you want the app to save your result." If they continue talking, remain in test mode and ask a fresh simple variation; do not start a normal lesson. Never claim they have passed or that this is an official certificate. The app evaluates and saves the transcript afterward.
+`;
 
 const DEFAULT_SNAPSHOT: LearningSnapshot = {
   memoryReady: false,
-  level: "Ny begynder",
+  level: "A0 · på vej mod A1",
   currentFocus: "Korte hverdagssætninger og tydelig udtale",
   nextLesson: "Hilsner og at præsentere sig selv",
   upcomingLessons: ["Hilsner og at præsentere sig selv"],
@@ -18,6 +31,7 @@ const DEFAULT_SNAPSHOT: LearningSnapshot = {
   wordProgress: [],
   knownWordCount: 0,
   masteredWordCount: 0,
+  a1Test: { eligible: false, passes: 0, latest: null, latestAt: null },
   dueWordCount: 0,
   completedSessionCount: 0,
   totalPracticeSeconds: 0,
@@ -59,7 +73,7 @@ export async function getLearningSnapshot(): Promise<LearningSnapshot> {
     await ensureDatabaseSchema();
     const db = getDatabase();
     const now = new Date();
-    const [profiles, words, totals, mastered, dueTotal, completed, practiceTime, voiceUsage, modelUsage, recentSessions] = await Promise.all([
+    const [profiles, words, totals, mastered, dueTotal, completed, practiceTime, voiceUsage, modelUsage, recentSessions, a1Tests] = await Promise.all([
       db.select().from(learnerProfile).where(eq(learnerProfile.id, 1)).limit(1),
       db
         .select({
@@ -96,6 +110,10 @@ export async function getLearningSnapshot(): Promise<LearningSnapshot> {
         .where(and(eq(practiceSessions.status, "completed"), isNotNull(practiceSessions.summary)))
         .orderBy(desc(practiceSessions.endedAt))
         .limit(1),
+      db.select({ assessment: practiceSessions.a1Assessment, endedAt: practiceSessions.endedAt })
+        .from(practiceSessions)
+        .where(and(eq(practiceSessions.kind, "a1_test"), eq(practiceSessions.status, "completed"), isNotNull(practiceSessions.a1Assessment)))
+        .orderBy(desc(practiceSessions.endedAt)),
     ]);
     const profile = profiles[0];
     const progress = words.map((word) => ({
@@ -109,9 +127,12 @@ export async function getLearningSnapshot(): Promise<LearningSnapshot> {
       finnish: word.finnish, english: word.english, mastery: word.mastery,
     }));
 
+    const strongCount = mastered[0]?.value ?? 0;
+    const a1Passes = a1Tests.filter((test) => test.assessment?.outcome === "passed").length;
+
     return {
       memoryReady: true,
-      level: profile?.level ?? DEFAULT_SNAPSHOT.level,
+      level: a1OralLevel(a1Passes),
       currentFocus: profile?.currentFocus ?? DEFAULT_SNAPSHOT.currentFocus,
       nextLesson: plan.nextLesson,
       upcomingLessons: plan.upcomingLessons,
@@ -119,7 +140,12 @@ export async function getLearningSnapshot(): Promise<LearningSnapshot> {
       dueWords: due,
       wordProgress: progress,
       knownWordCount: totals[0]?.value ?? 0,
-      masteredWordCount: mastered[0]?.value ?? 0,
+      masteredWordCount: strongCount,
+      a1Test: {
+        eligible: a1TestEligible(strongCount) || a1Passes > 0, passes: a1Passes,
+        latest: a1Tests[0]?.assessment ?? null,
+        latestAt: a1Tests[0]?.endedAt?.toISOString() ?? null,
+      },
       dueWordCount: dueTotal[0]?.value ?? 0,
       completedSessionCount: completed[0]?.value ?? 0,
       totalPracticeSeconds: Math.floor(Number(practiceTime[0]?.value ?? 0)),
@@ -133,8 +159,9 @@ export async function getLearningSnapshot(): Promise<LearningSnapshot> {
   }
 }
 
-export async function getTutorInstructions(): Promise<{ instructions: string; snapshot: LearningSnapshot }> {
+export async function getTutorInstructions(kind: SessionKind = "practice"): Promise<{ instructions: string; snapshot: LearningSnapshot }> {
   const snapshot = await getLearningSnapshot();
+  if (kind === "a1_test") return { instructions: A1_TEST_INSTRUCTIONS, snapshot };
   let recentSummaries: string[] = [];
 
   if (snapshot.memoryReady) {
@@ -232,11 +259,11 @@ Use this memory as guidance, not as a script. Do not tell the learner about data
   return { instructions, snapshot };
 }
 
-export async function beginPracticeSession(): Promise<number | null> {
+export async function beginPracticeSession(kind: SessionKind = "practice"): Promise<number | null> {
   if (!isDatabaseConfigured()) return null;
   try {
     await ensureDatabaseSchema();
-    const rows = await getDatabase().insert(practiceSessions).values({ status: "started" }).returning({ id: practiceSessions.id });
+    const rows = await getDatabase().insert(practiceSessions).values({ kind, status: "started" }).returning({ id: practiceSessions.id });
     return rows[0]?.id ?? null;
   } catch (error) {
     console.error("Could not start practice session", error);
@@ -263,7 +290,7 @@ export async function checkpointPracticeSession(id: number, fragments: Transcrip
   if (!isDatabaseConfigured()) throw new Error("Læringshukommelsen mangler en databaseforbindelse.");
   await ensureDatabaseSchema();
   const db = getDatabase();
-  const rows = await db.select({ status: practiceSessions.status, progressCursor: practiceSessions.progressCursor })
+  const rows = await db.select({ status: practiceSessions.status, progressCursor: practiceSessions.progressCursor, kind: practiceSessions.kind })
     .from(practiceSessions).where(eq(practiceSessions.id, id)).limit(1);
   const session = rows[0];
   if (!session) throw new Error("Samtalen findes ikke.");
@@ -273,7 +300,7 @@ export async function checkpointPracticeSession(id: number, fragments: Transcrip
     correctWords: [],
     difficultWords: [],
   });
-  if (session.status !== "started" || fragments.length <= session.progressCursor) return noChange();
+  if (session.kind === "a1_test" || session.status !== "started" || fragments.length <= session.progressCursor) return noChange();
 
   const fullTranscript = compactTranscript(fragments);
   const processUntil = completedTurnCutoff(fragments);
@@ -300,13 +327,13 @@ export async function checkpointPracticeSession(id: number, fragments: Transcrip
   };
 }
 
-export async function completePracticeSession(id: number, fragments: TranscriptLine[]): Promise<LearningSnapshot> {
+export async function completePracticeSession(id: number, fragments: TranscriptLine[], interrupted = false): Promise<LearningSnapshot> {
   if (!isDatabaseConfigured()) throw new Error("Læringshukommelsen mangler en databaseforbindelse.");
   if (!fragments.some((line) => line.text.trim())) throw new Error("Samtalen indeholdt ikke noget transkript at gemme.");
 
   await ensureDatabaseSchema();
   const db = getDatabase();
-  const rows = await db.select({ status: practiceSessions.status, progressCursor: practiceSessions.progressCursor })
+  const rows = await db.select({ status: practiceSessions.status, progressCursor: practiceSessions.progressCursor, kind: practiceSessions.kind })
     .from(practiceSessions).where(eq(practiceSessions.id, id)).limit(1);
   const session = rows[0];
   if (!session) throw new Error("Samtalen findes ikke.");
@@ -320,6 +347,29 @@ export async function completePracticeSession(id: number, fragments: TranscriptL
     .where(eq(practiceSessions.id, id));
 
   try {
+    if (session.kind === "a1_test") {
+      let assessment: A1Assessment;
+      try { assessment = interrupted || cleanTranscript.filter((line) => line.speaker === "dig").length < 5
+        ? { outcome: "incomplete", checks: { introduction: false, comprehension: false, interaction: false, everydayTask: false },
+          evidence: [], needsWork: ["Testen blev afbrudt eller sluttede før alle opgaver kunne vurderes."],
+          summary: "A1-taletesten var for kort eller blev afbrudt; den tæller ikke som bestået." }
+        : await assessA1Transcript(cleanTranscript, id); }
+      catch (error) {
+        console.error("Could not assess A1 oral test", error);
+        assessment = {
+          outcome: "incomplete",
+          checks: { introduction: false, comprehension: false, interaction: false, everydayTask: false },
+          evidence: [], needsWork: ["Testen blev gemt, men vurderingen mislykkedes teknisk. Prøv igen senere."],
+          summary: "A1-taletest gemt uden vurdering på grund af en teknisk fejl.",
+        };
+      }
+      await db.update(practiceSessions)
+        .set({ a1Assessment: assessment, summary: assessment.summary,
+          recap: { progress: assessment.evidence.slice(0, 3), needsWork: assessment.needsWork.slice(0, 3), nextStep: assessment.outcome === "passed" ? "Tag testen igen i en anden samtale for at bekræfte resultatet." : "Øv de svagere opgaver og prøv A1-taletesten igen." },
+          endedAt: new Date(), status: "completed", progressCursor: fragments.length })
+        .where(eq(practiceSessions.id, id));
+      return getLearningSnapshot();
+    }
     const review = await analyseTranscript(cleanTranscript, await getLearningSnapshot(), freshTranscript, id);
     await db.transaction(async (tx) => {
       await applyReview(review, true, tx);
@@ -335,6 +385,49 @@ export async function completePracticeSession(id: number, fragments: TranscriptL
       .where(eq(practiceSessions.id, id));
     throw error;
   }
+}
+
+async function assessA1Transcript(transcript: TranscriptLine[], sessionId: number): Promise<A1Assessment> {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) throw new Error("OPENAI_API_KEY mangler på serveren.");
+  const response = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: "gpt-6-luna", reasoning: { effort: "low" }, store: false, max_output_tokens: 1200,
+      input: [
+        { role: "system", content: `Assess ONLY the learner's oral A1 test evidence in this transcript. This is an internal speaking/listening check, not an official CEFR certificate. Judge conservatively. The transcript may contain speech-recognition errors; do not infer pronunciation quality from spelling. Do not count answers the tutor supplied first or simple repetition as independent ability. For each of the four checks, give an EXACT short quote from a learner line in the matching position of the evidence array; use an empty string if unmet or unclear. Do not quote tutor lines or invent text. Introduction: simple Finnish personal facts. Comprehension: appropriate answer to Finnish-only questions without prior translation. Interaction: appropriate exchange AND at least one learner-generated Finnish question. EverydayTask: communicates a need and responds to a follow-up in a practical role-play. Set completed=true only if all four distinct tasks were attempted; it does not mean passed. Return summary and specific needsWork in Danish. If audio/turn evidence is insufficient, set the affected check false. Return structured JSON only.` },
+        { role: "user", content: JSON.stringify({ transcript }) },
+      ],
+      text: { format: { type: "json_schema", name: "a1_oral_check", strict: true, schema: {
+        type: "object", properties: {
+          completed: { type: "boolean" },
+          checks: { type: "object", properties: {
+            introduction: { type: "boolean" }, comprehension: { type: "boolean" },
+            interaction: { type: "boolean" }, everydayTask: { type: "boolean" },
+          }, required: ["introduction", "comprehension", "interaction", "everydayTask"], additionalProperties: false },
+          evidence: { type: "array", items: { type: "string" } },
+          needsWork: { type: "array", items: { type: "string" } },
+          summary: { type: "string" },
+        }, required: ["completed", "checks", "evidence", "needsWork", "summary"], additionalProperties: false,
+      } } },
+    }), cache: "no-store",
+  });
+  const payload: unknown = await response.json().catch(() => null);
+  if (!response.ok) throw new Error(apiErrorMessage(payload));
+  await storeResponseUsage(sessionId, payload);
+  const output = responseText(payload);
+  if (!output) throw new Error("OpenAI returnerede ingen A1-vurdering.");
+  const raw = JSON.parse(output) as { completed: boolean; checks: A1Checks; evidence: string[]; needsWork: string[]; summary: string };
+  const learnerText = transcript.filter((line) => line.speaker === "dig").map((line) => line.text);
+  const checks = verifyA1Evidence(raw.checks, raw.evidence, learnerText);
+  const outcome = determineA1Outcome(raw.completed === true, checks, learnerText.length);
+  return {
+    outcome, checks,
+    evidence: raw.evidence.filter((quote) => typeof quote === "string" && quote.trim()).slice(0, 4),
+    needsWork: raw.needsWork.filter((item) => typeof item === "string" && item.trim()).slice(0, 4),
+    summary: raw.summary.trim().slice(0, 500) || "Mundtlig A1-test vurderet.",
+  };
 }
 
 async function storeResponseUsage(sessionId: number, payload: unknown): Promise<void> {

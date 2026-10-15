@@ -22,6 +22,7 @@ export async function getStatsData() {
     const [rows, usageRows, grammar] = await Promise.all([
       db.select({
         id: practiceSessions.id,
+        kind: practiceSessions.kind,
         startedAt: practiceSessions.startedAt,
         endedAt: practiceSessions.endedAt,
         voiceSeconds: practiceSessions.voiceSeconds,
@@ -49,6 +50,7 @@ export async function getStatsData() {
         : Math.max(0, Math.floor(((row.endedAt?.getTime() ?? row.startedAt.getTime()) - row.startedAt.getTime()) / 1_000));
       return {
         id: row.id,
+        kind: row.kind === "a1_test" ? "a1_test" : "practice",
         startedAt: row.startedAt.toISOString(),
         durationSeconds,
         estimatedCostUsd: Number((durationSeconds * 0.05 / 60 + (backendCost.get(row.id) ?? 0)).toFixed(4)),

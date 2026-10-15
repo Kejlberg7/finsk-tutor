@@ -15,6 +15,7 @@ export async function POST(request: Request) {
     sessionId?: unknown;
     attemptId?: unknown;
     transcript?: unknown;
+    interrupted?: unknown;
   } | null;
 
   if (!Number.isInteger(body?.sessionId) || typeof body?.sessionId !== "number") {
@@ -31,7 +32,7 @@ export async function POST(request: Request) {
   }
 
   try {
-    const learning = await completePracticeSession(body.sessionId, transcript);
+    const learning = await completePracticeSession(body.sessionId, transcript, body.interrupted === true);
     return NextResponse.json({ ok: true, learning }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     console.error("Could not complete practice session", error);

@@ -122,6 +122,18 @@ button:disabled { cursor: not-allowed; opacity: 0.52; }
 .level-step-marker { display: inline-block; margin-top: 10px; color: #285340; font-size: 0.62rem; font-weight: 850; letter-spacing: 0.1em; }
 .level-guide-note { margin: 16px 0 0; color: var(--muted); font-size: 0.76rem; line-height: 1.5; }
 .level-guide-link { display: inline-block; margin-top: 8px; color: #285340; font-size: 0.76rem; font-weight: 760; text-decoration-thickness: 1px; text-underline-offset: 3px; }
+.a1-check-card { display: flex; align-items: center; justify-content: space-between; gap: 24px; margin-top: 18px; padding: 25px 27px; border: 1px solid #d5e4d0; border-radius: 22px; background: #f0f7eb; }
+.a1-check-card h3 { margin: 8px 0; color: #214c38; font-size: clamp(1.25rem, 2.3vw, 1.65rem); letter-spacing: -.04em; }
+.a1-check-card p { max-width: 70ch; margin: 0; color: #385c49; font-size: .88rem; line-height: 1.5; }
+.a1-check-card .a1-check-disclaimer { margin-top: 8px; color: #657d6a; font-size: .77rem; }
+.a1-check-result { margin-top: 14px; padding: 12px 14px; border: 1px solid #cadfc6; border-radius: 13px; background: #fff; color: #315740; }
+.a1-check-result strong { font-size: .87rem; }
+.a1-check-result p { margin-top: 5px; }
+.a1-check-list { display: flex; flex-wrap: wrap; gap: 6px 15px; margin: 10px 0 0; padding: 0; list-style: none; }
+.a1-check-list li { display: flex; align-items: center; gap: 5px; color: #315740; font-size: .76rem; }
+.a1-check-result small { display: block; margin-top: 6px; font-size: .75rem; }
+.a1-check-start { flex: none; padding: 13px 17px; border: 0; border-radius: 12px; background: #1c533c; color: #fff; font: inherit; font-size: .85rem; font-weight: 750; cursor: pointer; }
+.a1-check-start:disabled { opacity: .55; cursor: not-allowed; }
 
 .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(155px, 1fr)); gap: 16px; }
 .stat-card { display: flex; flex-direction: column; align-items: flex-start; min-height: 156px; padding: 21px; }
@@ -261,6 +273,8 @@ button:disabled { cursor: not-allowed; opacity: 0.52; }
   .lesson-card, .review-card, .recent-card, .archive-card { padding: 21px; }
   .level-guide { padding: 19px; }
   .level-guide-heading { align-items: start; flex-direction: column; }
+  .a1-check-card { align-items: stretch; flex-direction: column; padding: 21px; }
+  .a1-check-start { width: 100%; }
   .level-guide-list { gap: 8px; margin-top: 15px; }
   .level-step { min-height: 174px; padding: 12px; }
   .level-step-top { align-items: start; flex-direction: column; gap: 3px; }

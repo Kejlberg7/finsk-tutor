@@ -6,13 +6,18 @@ import { cleanFragments } from "@/lib/transcript";
 import type { TranscriptLine } from "@/lib/learning-types";
 import { parseDiagnosticEvent } from "@/lib/session-diagnostics";
 import { saveDiagnosticEvents } from "@/lib/session-diagnostics-server";
+import type { SessionKind } from "@/lib/a1-test";
 
 export async function POST(request: Request) {
   if (!(await getSessionFromRequest(request))) {
     return NextResponse.json({ error: "Ikke logget ind." }, { status: 401 });
   }
 
-  const body = (await request.json().catch(() => null)) as { sdp?: unknown; resumeTranscript?: unknown; attemptId?: unknown } | null;
+  const body = (await request.json().catch(() => null)) as { sdp?: unknown; resumeTranscript?: unknown; attemptId?: unknown; kind?: unknown } | null;
+  if (body?.kind !== undefined && body.kind !== "practice" && body.kind !== "a1_test") {
+    return NextResponse.json({ error: "Ugyldig samtaletype." }, { status: 400 });
+  }
+  const kind: SessionKind = body?.kind === "a1_test" ? "a1_test" : "practice";
   const attemptId = typeof body?.attemptId === "string" && /^[0-9a-f-]{36}$/i.test(body.attemptId)
     ? body.attemptId : crypto.randomUUID();
   if (typeof body?.sdp !== "string" || !body.sdp.trim()) {
@@ -35,12 +40,15 @@ export async function POST(request: Request) {
   }
 
   let tutor;
-  try { tutor = await getTutorInstructions(); }
+  try { tutor = await getTutorInstructions(kind); }
   catch (error) {
     await recordStartFailure(attemptId, "learning_context", "context_failed", error instanceof Error ? error.message : null);
     return NextResponse.json({ error: "Kunne ikke hente læringsplanen." }, { status: 500 });
   }
   const { instructions, snapshot } = tutor;
+  if (kind === "a1_test" && (!snapshot.memoryReady || !snapshot.a1Test.eligible)) {
+    return NextResponse.json({ error: "A1-taletesten bliver tilgængelig ved 100 stærke udtryk." }, { status: 403 });
+  }
 
   let response: Response;
   try { response = await fetch("https://api.openai.com/v1/live/sessions", {
@@ -53,14 +61,16 @@ export async function POST(request: Request) {
       session: {
         model: "gpt-live-1",
         instructions,
-        ...(resumeTranscript.length ? { input: buildResumeInput(resumeTranscript) } : {}),
+        ...(kind === "practice" && resumeTranscript.length ? { input: buildResumeInput(resumeTranscript) } : {}),
         delegation: {
           type: "responses",
           responses: {
             model: "gpt-6-luna",
             reasoning: { effort: "low" },
             max_output_tokens: 700,
-            instructions: `
+            instructions: kind === "a1_test" ? `
+You are the silent backend for an INTERNAL ORAL A1 check. Help the live tutor administer four independent tasks: introduction, Finnish-only comprehension, two-way interaction including one learner-generated Finnish question, and one everyday role-play. Give the next short test prompt, not a lesson. Do not reveal answers, coach, translate the Finnish prompt before the learner answers, assign a score, or say that the learner passed. The app evaluates the saved transcript afterward. If a task is done, move to a different task. Stay in test mode until the learner stops.
+` : `
 You are the fast, silent lesson-planning backend for a live Finnish tutor.
 The learner's goal is about 30 minutes per session. When the current exercise is complete, provide the next connected 4–6 minute block so the tutor can sustain a 30-minute session; do not plan or imply that one completed block means the whole session is done. By default include one GENUINELY NEW target (one or two connected words or a useful phrase), one brief retrieval question about older material, a mini-dialogue, and a natural transition to the following block. If the learner explicitly asked for review only or no new vocabulary, honor that for the rest of this session and build a varied block entirely from known material.
 Respect the learner's level and recent conversation. If the learner has already answered a target correctly twice or complains about repetition, move to a new connected target immediately. Do not restart with greetings, wellbeing, or work/home drills when they were just practised. Never tell the learner to wait and never return progress commentary; return the usable lesson plan immediately.
@@ -101,9 +111,12 @@ When recent conversation shows a block has been practised, choose a new connecte
   const liveSessionId = result && typeof result === "object" && "session" in result
     ? ((result as { session?: { id?: unknown } }).session?.id ?? null)
     : null;
-  const appSessionId = await beginPracticeSession();
+  const appSessionId = await beginPracticeSession(kind);
   await attachLiveSessionId(appSessionId, typeof liveSessionId === "string" ? liveSessionId : null);
   if (!appSessionId) await recordStartFailure(attemptId, "database", "session_not_saved", "Live-sessionen startede, men samtaledelen kunne ikke oprettes.");
+  if (!appSessionId && kind === "a1_test") {
+    return NextResponse.json({ error: "A1-taletesten kunne ikke gemmes. Prøv igen senere." }, { status: 503 });
+  }
 
   return NextResponse.json({
     ...(result && typeof result === "object" ? result : {}),

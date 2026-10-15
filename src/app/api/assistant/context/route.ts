@@ -28,6 +28,8 @@ export async function GET(request: Request) {
     const db = getDatabase();
     const rows = await db.select({
       id: practiceSessions.id,
+      kind: practiceSessions.kind,
+      a1Assessment: practiceSessions.a1Assessment,
       startedAt: practiceSessions.startedAt,
       endedAt: practiceSessions.endedAt,
       voiceSeconds: practiceSessions.voiceSeconds,
@@ -56,6 +58,8 @@ export async function GET(request: Request) {
       ));
       return {
         id: row.id,
+        kind: row.kind === "a1_test" ? "a1_test" : "practice",
+        a1Assessment: row.a1Assessment,
         startedAt: row.startedAt.toISOString(),
         endedAt: row.endedAt?.toISOString() ?? null,
         durationSeconds,

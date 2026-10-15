@@ -9,6 +9,7 @@ import { getStatsData } from "@/lib/stats-server";
 import { closeReasonLabel } from "@/lib/session-diagnostics";
 import type { WordProgress } from "@/lib/learning-types";
 import { practiceCounts } from "@/lib/learning-plan";
+import { A1_TEST_PASSES_REQUIRED, A1_TEST_STRONG_GOAL } from "@/lib/a1-test";
 import "./stats.css";
 
 export const metadata: Metadata = {
@@ -66,6 +67,19 @@ export default async function StatsPage() {
             role="progressbar" aria-label="Stærke udtryk mod næste milepæl" aria-valuenow={secure.length} aria-valuemin={0} aria-valuemax={nextGoal}>
             <div><span>NÆSTE MILEPÆL</span><strong>{secure.length}<small> / {nextGoal}</small></strong><span>stærke udtryk</span></div>
           </div>
+        </section>
+
+        <section className="insights-panel insights-a1" aria-labelledby="insights-a1-title">
+          <div>
+            <span className="insights-kicker">MUNDTLIG A1 · APPVURDERING</span>
+            <h2 id="insights-a1-title">{learning.a1Test.passes >= A1_TEST_PASSES_REQUIRED ? "Du har nået appens A1-talemål" : "Et niveau du kan afprøve"}</h2>
+            <p>{learning.a1Test.eligible
+              ? `Testen er åben. ${Math.min(learning.a1Test.passes, A1_TEST_PASSES_REQUIRED)} af ${A1_TEST_PASSES_REQUIRED} beståede, særskilte tests.`
+              : `${learning.masteredWordCount} af ${A1_TEST_STRONG_GOAL} stærke udtryk før testen åbner. Antallet er kun en adgang til testen, ikke et bevis på A1.`}</p>
+            {learning.a1Test.latest && <p><strong>Seneste vurdering:</strong> {learning.a1Test.latest.summary}</p>}
+            <small>En håndfri test af enkel samtale og forståelse. Ikke et officielt CEFR-bevis; læsning og skrivning er ikke testet.</small>
+          </div>
+          <Link href="/" className="insights-a1-link">{learning.a1Test.eligible ? "Start testen på forsiden ↗" : "Se din læringsplan ↗"}</Link>
         </section>
 
         {!data.available && <p className="insights-warning" role="status">Statistikdatabasen er ikke tilgængelig lige nu. Nogle tal kan derfor mangle.</p>}
@@ -206,7 +220,7 @@ export default async function StatsPage() {
           {data.sessions.length ? <ol className="insights-session-list">{data.sessions.slice(0, 8).map((session, index) => (
             <li key={session.id}>
               <span className="insights-session-index">{String(index + 1).padStart(2, "0")}</span>
-              <div className="insights-session-date"><strong>{formatCalendarDay(session.startedAt)}</strong><span>kl. {formatClock(session.startedAt)}{session.status !== "completed" ? " · delvist gemt" : ""}{session.closeReason ? ` · ${closeReasonLabel(session.closeReason, Boolean(session.closeConfirmed))}` : ""}</span></div>
+              <div className="insights-session-date"><strong>{formatCalendarDay(session.startedAt)}</strong><span>kl. {formatClock(session.startedAt)}{session.kind === "a1_test" ? " · A1-taletest" : ""}{session.status !== "completed" ? " · delvist gemt" : ""}{session.closeReason ? ` · ${closeReasonLabel(session.closeReason, Boolean(session.closeConfirmed))}` : ""}</span></div>
               <div className="insights-session-meter"><span><i style={{ width: `${Math.min(100, Math.max(3, session.durationSeconds / (30 * 60) * 100))}%` }} /></span><small>{formatDuration(session.durationSeconds)}</small></div>
               <strong className="insights-session-cost">{formatUsd(session.estimatedCostUsd)}</strong>
             </li>

@@ -1,5 +1,6 @@
 export type PracticeStat = {
   id: number;
+  kind?: "practice" | "a1_test";
   startedAt: string;
   durationSeconds: number;
   estimatedCostUsd: number;

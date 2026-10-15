@@ -1,4 +1,5 @@
 import { integer, jsonb, numeric, pgTable, serial, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
+import type { A1Assessment } from "@/lib/a1-test";
 
 export const learnerProfile = pgTable("learner_profile", {
   id: integer("id").primaryKey().default(1),
@@ -48,6 +49,8 @@ export const grammarSkills = pgTable(
 
 export const practiceSessions = pgTable("practice_sessions", {
   id: serial("id").primaryKey(),
+  kind: text("kind").notNull().default("practice"),
+  a1Assessment: jsonb("a1_assessment").$type<A1Assessment>(),
   liveSessionId: text("live_session_id"),
   startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
   endedAt: timestamp("ended_at", { withTimezone: true }),

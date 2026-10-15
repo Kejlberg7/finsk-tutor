@@ -1,3 +1,5 @@
+import type { A1Assessment } from "@/lib/a1-test";
+
 export type TranscriptLine = {
   speaker: "dig" | "tutor";
   text: string;
@@ -39,6 +41,12 @@ export type LearningSnapshot = {
   wordProgress: WordProgress[];
   knownWordCount: number;
   masteredWordCount: number;
+  a1Test: {
+    eligible: boolean;
+    passes: number;
+    latest: A1Assessment | null;
+    latestAt: string | null;
+  };
   dueWordCount: number;
   completedSessionCount: number;
   totalPracticeSeconds: number;
@@ -49,6 +57,8 @@ export type LearningSnapshot = {
 
 export type RecentSession = {
   id: number;
+  kind: "practice" | "a1_test";
+  a1Assessment: A1Assessment | null;
   startedAt: string;
   endedAt: string | null;
   durationSeconds: number;

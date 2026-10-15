@@ -11,6 +11,7 @@ import type { DiagnosticDetails } from "@/lib/session-diagnostics";
 import { closeReasonLabel } from "@/lib/session-diagnostics";
 import { formatDuration } from "@/lib/duration";
 import { practiceCounts, practiceStage } from "@/lib/learning-plan";
+import { A1_TEST_PASSES_REQUIRED, A1_TEST_STRONG_GOAL, type SessionKind } from "@/lib/a1-test";
 import type { IdeaNote, LearningSnapshot, RecentSession, TranscriptLine, WordProgress } from "@/lib/learning-types";
 
 const EMPTY_LEARNING: LearningSnapshot = {
@@ -24,6 +25,7 @@ const EMPTY_LEARNING: LearningSnapshot = {
   wordProgress: [],
   knownWordCount: 0,
   masteredWordCount: 0,
+  a1Test: { eligible: false, passes: 0, latest: null, latestAt: null },
   dueWordCount: 0,
   completedSessionCount: 0,
   totalPracticeSeconds: 0,
@@ -40,6 +42,13 @@ const LANGUAGE_LEVELS = [
   { code: "B2", label: "Rutineret", description: "Kan tale mere flydende og forklare synspunkter om mange emner.", note: "Selvstændig bruger" },
   { code: "C1", label: "Avanceret", description: "Kan forstå komplekst sprog og udtrykke sig fleksibelt og nuanceret.", note: "Kompetent bruger" },
   { code: "C2", label: "Meget avanceret", description: "Kan forstå næsten alt og udtrykke selv små betydningsnuancer præcist.", note: "Kompetent bruger" },
+] as const;
+
+const A1_CHECK_LABELS = [
+  ["introduction", "Præsentere dig selv"],
+  ["comprehension", "Forstå enkle spørgsmål"],
+  ["interaction", "Spørge og svare"],
+  ["everydayTask", "Klare en hverdagssituation"],
 ] as const;
 
 type LiveEvent = {
@@ -89,6 +98,7 @@ export default function VoiceConsole() {
   const checkpointPromiseRef = useRef<Promise<void> | null>(null);
   const progressCursorRef = useRef(0);
   const appSessionIdRef = useRef<number | null>(null);
+  const sessionKindRef = useRef<SessionKind>("practice");
   const attemptIdRef = useRef("");
   const finalisingRef = useRef(false);
   const closeReasonRef = useRef<string | null>(null);
@@ -407,6 +417,7 @@ export default function VoiceConsole() {
   }
 
   async function checkpoint() {
+    if (sessionKindRef.current === "a1_test") return;
     const sessionId = appSessionIdRef.current;
     const attemptId = attemptIdRef.current;
     if (!sessionId || checkpointPromiseRef.current || rawTranscriptRef.current.length <= progressCursorRef.current) return;
@@ -504,7 +515,9 @@ export default function VoiceConsole() {
     }, Math.min(1_000 * 2 ** (attempt - 1), 12_000));
   }
 
-  async function start(resumeTranscript: TranscriptLine[] = [], automatic = false) {
+  async function start(resumeTranscript: TranscriptLine[] = [], automatic = false, requestedKind: SessionKind = "practice") {
+    if (!automatic) sessionKindRef.current = requestedKind;
+    const kind = sessionKindRef.current;
     const attemptId = crypto.randomUUID();
     attemptIdRef.current = attemptId;
     diagnose("client.start", automatic ? "automatic_resume" : "manual_start", null, {
@@ -622,21 +635,21 @@ export default function VoiceConsole() {
           diagnose("live.session_started", null, null, { peerState: peer.connectionState, channelState: channel.readyState });
           recoveringRef.current = false;
           reconnectAttemptsRef.current = 0;
-          setStatus("Forbundet — tal bare.");
+          setStatus(kind === "a1_test" ? "A1-taletest i gang — tal bare." : "Forbundet — tal bare.");
           sendEvent({
             type: "session.instructions.append",
-            event_id: automatic ? "resume_lesson" : "start_lesson",
+            event_id: automatic ? "resume_conversation" : kind === "a1_test" ? "start_a1_test" : "start_lesson",
             delegation_id: null,
             content: automatic
-              ? "Continue the interrupted Finnish lesson now, without a greeting or repeated review. Use the supplied conversation history and teach the next useful step."
-              : "Open the lesson now with a very brief English greeting and today's focus, then give the first short Finnish phrase. Normally mix brief review with small new targets; honor any review-only preference in the learner memory.",
+              ? kind === "a1_test" ? "The previous A1 check was interrupted and cannot be combined with this new call. Briefly tell the learner that you are restarting the four short test tasks, then begin the test from the start. Do not switch to a normal lesson." : "Continue the interrupted Finnish lesson now, without a greeting or repeated review. Use the supplied conversation history and teach the next useful step."
+              : kind === "a1_test" ? "Begin the internal oral A1 check now. Briefly explain in English, then ask the first test question. Do not coach or reveal answers before attempts." : "Open the lesson now with a very brief English greeting and today's focus, then give the first short Finnish phrase. Normally mix brief review with small new targets; honor any review-only preference in the learner memory.",
           });
         }
         if (event.type === "session.delegation.created") {
           setStatus("Planlægger næste øvelse — du kan stadig tale.");
         }
         if (event.type === "response.event" && ["response.completed", "response.failed", "response.incomplete"].includes(event.event?.type ?? "")) {
-          setStatus("Forbundet — tal bare.");
+          setStatus(kind === "a1_test" ? "A1-taletest i gang — tal bare." : "Forbundet — tal bare.");
         }
         if (event.type === "response.event" && ["response.failed", "response.incomplete"].includes(event.event?.type ?? "")) {
           const problem = event.event?.response;
@@ -687,7 +700,7 @@ export default function VoiceConsole() {
         credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          sdp, attemptId,
+          sdp, attemptId, kind,
           ...(automatic ? { resumeTranscript: resumeTranscript.slice(-30).map((line) => ({ speaker: line.speaker, text: line.text.slice(-600) })) } : {}),
         }),
       });
@@ -764,6 +777,8 @@ export default function VoiceConsole() {
     if (!background) setSaving(true);
     const sessionId = appSessionIdRef.current;
     const attemptId = attemptIdRef.current;
+    const kind = sessionKindRef.current;
+    const closeReason = closeReasonRef.current;
     const finalTranscript = [...rawTranscriptRef.current];
     const pendingCheckpoint = checkpointPromiseRef.current;
     const pendingIdeas = [...ideaTasksRef.current];
@@ -780,14 +795,15 @@ export default function VoiceConsole() {
       return;
     }
 
-    if (!background) setStatus("Samtalen analyseres og føjes til din læringsplan…");
+    if (!background) setStatus(kind === "a1_test" ? "A1-taletesten vurderes…" : "Samtalen analyseres og føjes til din læringsplan…");
     try {
       const response = await fetch("/api/session/complete", {
         method: "POST",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
         signal: AbortSignal.timeout(65_000),
-        body: JSON.stringify({ sessionId, attemptId, transcript: finalTranscript }),
+        body: JSON.stringify({ sessionId, attemptId, transcript: finalTranscript,
+          interrupted: kind === "a1_test" && (background || ["content", "connection_lost", "expired"].includes(closeReason ?? "")) }),
       });
       const payload: unknown = await response.json().catch(() => null);
       if (!response.ok) throw new Error(apiErrorMessage(payload));
@@ -795,9 +811,11 @@ export default function VoiceConsole() {
       if (nextLearning && (appSessionIdRef.current === sessionId || !background)) setLearning(nextLearning);
       void refreshHistory();
       void refreshIdeas();
-      if (!background) setStatus(closeReasonRef.current === "content"
+      if (!background) setStatus(closeReason === "content"
         ? "Samtalen blev stoppet af sikkerhedshensyn, men er gemt."
-        : "Gemt — næste samtale fortsætter ud fra det, du øvede.");
+        : kind === "a1_test"
+          ? "A1-taletesten er gemt. Se vurderingen nedenfor."
+          : "Gemt — næste samtale fortsætter ud fra det, du øvede.");
     } catch (error) {
       diagnose("app.save_failed", error instanceof Error ? error.name : "unknown", error instanceof Error ? error.message : null,
         { phase: "complete" }, sessionId, attemptId);
@@ -899,8 +917,29 @@ export default function VoiceConsole() {
                 );
               })}
             </ol>
-            <p className="level-guide-note">A0 er Finsk Tutors interne starttrin. Europarådets CEFR-skala går fra A1 til C2. Niveauet her er et vejledende skøn ud fra dine samtaler, ikke en officiel test.</p>
+            <p className="level-guide-note">A0 er appens starttrin. Mundtligt A1 markeres først efter to beståede, særskilte taletests. Det er en intern vurdering af tale og lytning, ikke et officielt CEFR-bevis. Kriterier for A2 og højere er ikke fastlagt i appen endnu.</p>
             <a className="level-guide-link" href="https://www.coe.int/en/web/common-european-framework-reference-languages/level-descriptions" target="_blank" rel="noreferrer">Læs om CEFR hos Europarådet ↗</a>
+          </section>
+
+          <section className="a1-check-card" aria-labelledby="a1-check-title">
+            <div>
+              <span className="card-kicker">MUNDTLIG A1-VURDERING</span>
+              <h3 id="a1-check-title">{learning.a1Test.passes >= A1_TEST_PASSES_REQUIRED ? "A1 i tale og lytning · appvurderet" : "Din vej til A1-taletesten"}</h3>
+              <p>{learning.a1Test.eligible
+                ? `Testen er åben. Du har ${Math.min(learning.a1Test.passes, A1_TEST_PASSES_REQUIRED)} af ${A1_TEST_PASSES_REQUIRED} beståede tests i forskellige samtaler.`
+                : `${learning.masteredWordCount} af ${A1_TEST_STRONG_GOAL} stærke udtryk. Ved cirka 100 åbner en kort, håndfri test af forståelse og samtale.`}</p>
+              <p className="a1-check-disclaimer">Testen varer cirka 10–15 minutter. Den giver ikke et officielt CEFR-certifikat og vurderer ikke læsning eller skrivning.</p>
+              {learning.a1Test.latest && <div className="a1-check-result">
+                <strong>Seneste test: {learning.a1Test.latest.outcome === "passed" ? "Bestået" : learning.a1Test.latest.outcome === "incomplete" ? "Ikke vurderbar" : "Øv lidt mere"}</strong>
+                <p>{learning.a1Test.latest.summary}</p>
+                {learning.a1Test.latest.outcome !== "incomplete" && <ul className="a1-check-list">
+                  {A1_CHECK_LABELS.map(([key, label]) => <li key={key}><span aria-hidden="true">{learning.a1Test.latest?.checks[key] ? "✓" : "○"}</span>{label}</li>)}
+                </ul>}
+                {learning.a1Test.latest.needsWork.length > 0 && <small>Øv videre: {learning.a1Test.latest.needsWork.join(" · ")}</small>}
+              </div>}
+            </div>
+            {learning.a1Test.eligible && <button type="button" className="a1-check-start" disabled={active || connecting || saving}
+              onClick={() => { void start([], false, "a1_test"); }}>Start A1-taletest <span aria-hidden="true">↗</span></button>}
           </section>
 
           <div className="stat-grid" aria-label="Dine øvestatistikker">
@@ -990,7 +1029,7 @@ export default function VoiceConsole() {
                 <div className="archive-list">
                   {history.map((session) => (
                     <details className="archive-item" key={session.id}>
-                      <summary><span><strong>{formatDate(session.startedAt)}</strong><small>{formatDuration(session.durationSeconds)} · ca. {formatUsd(session.estimatedApiCostUsd)} · {session.status === "completed" ? "Gemt samtale" : "Delvist gemt"}{session.closeReason ? ` · ${closeReasonLabel(session.closeReason, session.closeConfirmed)}` : ""}</small></span><span className="archive-arrow" aria-hidden="true">⌄</span></summary>
+                      <summary><span><strong>{formatDate(session.startedAt)}</strong><small>{session.kind === "a1_test" ? `A1-taletest${session.a1Assessment ? ` · ${session.a1Assessment.outcome === "passed" ? "bestået" : session.a1Assessment.outcome === "incomplete" ? "ikke vurderbar" : "øv videre"}` : ""}` : "Samtale"} · {formatDuration(session.durationSeconds)} · ca. {formatUsd(session.estimatedApiCostUsd)} · {session.status === "completed" ? "Gemt" : "Delvist gemt"}{session.closeReason ? ` · ${closeReasonLabel(session.closeReason, session.closeConfirmed)}` : ""}</small></span><span className="archive-arrow" aria-hidden="true">⌄</span></summary>
                       <p>{session.summary ?? "Ingen opsummering endnu. Du kan stadig læse samtalen herunder."}</p>
                       {session.recap ? <div className="recap-details">
                         {session.recap.progress.length > 0 && <p><strong>Det lykkedes:</strong> {session.recap.progress.join(" · ")}</p>}
