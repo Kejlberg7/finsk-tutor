@@ -10,6 +10,7 @@ import { closeReasonLabel } from "@/lib/session-diagnostics";
 import type { WordProgress } from "@/lib/learning-types";
 import { practiceCounts } from "@/lib/learning-plan";
 import { A1_TEST_PASSES_REQUIRED, A1_TEST_STRONG_GOAL } from "@/lib/a1-test";
+import { LEVEL_ROADMAP } from "@/lib/level-roadmap";
 import "./stats.css";
 
 export const metadata: Metadata = {
@@ -80,6 +81,23 @@ export default async function StatsPage() {
             <small>En håndfri test af enkel samtale og forståelse. Ikke et officielt CEFR-bevis; læsning og skrivning er ikke testet.</small>
           </div>
           <Link href="/" className="insights-a1-link">{learning.a1Test.eligible ? "Start testen på forsiden ↗" : "Se din læringsplan ↗"}</Link>
+        </section>
+
+        <section className="insights-roadmap" id="langsigtede-maal" aria-labelledby="insights-roadmap-title">
+          <div className="insights-section-heading">
+            <div><span className="insights-kicker">DIN LANGSIGTEDE PLAN</span><h2 id="insights-roadmap-title">Fra A1 til C2.</h2></div>
+            <p>Ord er nyttige at øve, men et CEFR-niveau handler om, hvad du kan forstå og udtrykke.</p>
+          </div>
+          <p className="insights-roadmap-intro">A1-taletesten er aktiv. Målene nedenfor er vores forslag til, hvornår du vil være klar til at <em>prøve</em> de næste mundtlige niveauer — ikke officielle ordgrænser eller automatisk målte fremskridt. Når de senere tests bygges, bør adgang kræve bestået forrige niveau og gode resultater i mindst to forskellige øvesamtaler.</p>
+          <ol className="insights-roadmap-grid">
+            {LEVEL_ROADMAP.map((level) => <li className="insights-roadmap-card" key={level.code}>
+              <div className="insights-roadmap-top"><span>{level.code}</span><small>FREMTIDIG TEST</small></div>
+              <h3>{level.label}</h3>
+              <p><strong>Klar til at prøve, når:</strong> {level.readiness}</p>
+              <p><strong>Eksempel på test:</strong> {level.sample}</p>
+            </li>)}
+          </ol>
+          <p className="insights-roadmap-foot">Appen måler endnu ikke parathed til A2–C2 og kan ikke udstede CEFR- eller YKI-certifikater. En officiel YKI-prøve vurderer også læsning og skrivning. <a href="https://www.coe.int/en/web/common-european-framework-reference%2Blanguages/table-1-cefr-3.3-common-reference-levels-global-scale" target="_blank" rel="noreferrer">CEFR-niveauer ↗</a> · <a href="https://www.oph.fi/en/education-and-qualifications/selecting-right-yki-test-test-days" target="_blank" rel="noreferrer">Finsk YKI-prøve ↗</a></p>
         </section>
 
         {!data.available && <p className="insights-warning" role="status">Statistikdatabasen er ikke tilgængelig lige nu. Nogle tal kan derfor mangle.</p>}

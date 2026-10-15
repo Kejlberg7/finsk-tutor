@@ -917,8 +917,9 @@ export default function VoiceConsole() {
                 );
               })}
             </ol>
-            <p className="level-guide-note">A0 er appens starttrin. Mundtligt A1 markeres først efter to beståede, særskilte taletests. Det er en intern vurdering af tale og lytning, ikke et officielt CEFR-bevis. Kriterier for A2 og højere er ikke fastlagt i appen endnu.</p>
-            <a className="level-guide-link" href="https://www.coe.int/en/web/common-european-framework-reference-languages/level-descriptions" target="_blank" rel="noreferrer">Læs om CEFR hos Europarådet ↗</a>
+            <p className="level-guide-note">A0 er appens starttrin. Mundtligt A1 markeres først efter to beståede, særskilte taletests. Det er en intern vurdering af tale og lytning, ikke et officielt CEFR-bevis. A2–C2 er foreløbige læringsmål; deres tests er ikke bygget endnu.</p>
+            <Link className="level-guide-link" href="/statistik#langsigtede-maal">Se konkrete mål for A2–C2 ↗</Link><br />
+            <a className="level-guide-link" href="https://www.coe.int/en/web/common-european-framework-reference%2Blanguages/table-1-cefr-3.3-common-reference-levels-global-scale" target="_blank" rel="noreferrer">Læs om CEFR hos Europarådet ↗</a>
           </section>
 
           <section className="a1-check-card" aria-labelledby="a1-check-title">
