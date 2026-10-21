@@ -62,15 +62,18 @@ export function selectReviewWords<T extends PracticeEvidence>(words: T[], now = 
     legacy: useful.filter((word) => practiceStage(word) === "legacy").sort(byAge),
   };
   const selected: T[] = [];
+  const canPick = (word: T) => selected.every((picked) => phraseSimilarity(word.finnish, picked.finnish) < 0.5)
+    && (!word.evidence?.legacyStrong || isStrong(word) || word.evidence.needsCheck
+      || !selected.some((picked) => picked.evidence?.legacyStrong && !isStrong(picked) && !picked.evidence.needsCheck));
   // One legacy confirmation slot, not an entire re-examination of the old list.
   for (const stage of ["practicing", "once", "introduced", "legacy", "secure"] as const) {
-    const index = groups[stage].findIndex((word) => selected.every((picked) => phraseSimilarity(word.finnish, picked.finnish) < 0.5));
+    const index = groups[stage].findIndex(canPick);
     const word = index < 0 ? undefined : groups[stage].splice(index, 1)[0];
     if (word) selected.push(word);
   }
   for (const word of [...groups.practicing, ...groups.once, ...groups.introduced, ...groups.secure]) {
     if (selected.length >= limit) break;
-    if (selected.every((picked) => phraseSimilarity(word.finnish, picked.finnish) < 0.5)) selected.push(word);
+    if (canPick(word)) selected.push(word);
   }
   return selected.slice(0, limit);
 }

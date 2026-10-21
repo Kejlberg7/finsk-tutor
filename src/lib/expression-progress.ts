@@ -109,7 +109,7 @@ export function projectExpressions(words: WordProgress[], attempts: ExpressionAt
     const latest = [...variants].sort((a, b) => (b.lastSeenAt ?? "").localeCompare(a.lastSeenAt ?? ""))[0];
     const mastery = Math.max(...variants.map((w) => w.mastery));
     const evidence = expressionEvidence(byExpression.get(key) ?? [], mastery, latest.nextReviewAt);
-    return { ...latest, finnish: key, mastery,
+    return { ...latest, mastery,
       correctCount: Math.max(...variants.map((w) => w.correctCount)),
       incorrectCount: Math.max(...variants.map((w) => w.incorrectCount)),
       evidence, nextReviewAt: evidence.nextReviewAt };
@@ -120,7 +120,7 @@ export function isStrong(word: { mastery: number; evidence?: ExpressionEvidence 
   return word.evidence?.strong ?? false;
 }
 
-export function expressionStageLabel(word: { mastery: number; evidence?: ExpressionEvidence }): string {
+export function expressionStageLabel(word: { mastery: number; correctCount?: number; incorrectCount?: number; evidence?: ExpressionEvidence }): string {
   const e = word.evidence;
   if (e?.needsCheck) return "Kræver et gencheck";
   if (e?.strong) return "Stærkt · bekræftet over tid";
@@ -128,6 +128,7 @@ export function expressionStageLabel(word: { mastery: number; evidence?: Express
   if (e?.legacyStrong || (!e && word.mastery >= 4)) return "Tidligere høj score · afventer bekræftelse";
   if (e?.comprehensionCorrect) return "Forstået · tale mangler at blive testet";
   if (e?.attempts) return "Øvet med hjælp / under indlæring";
+  if ((word.correctCount ?? 0) + (word.incorrectCount ?? 0) > 0) return "Historisk øvet · afventer ny dokumentation";
   return "Mødt · afventer dokumenteret forsøg";
 }
 

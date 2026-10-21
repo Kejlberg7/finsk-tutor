@@ -597,7 +597,7 @@ async function applyReview(
     const existing = alias ? await db.select().from(vocabulary).where(eq(vocabulary.id, alias.id)).for("update").limit(1) : [];
     const current = existing[0];
     const values = {
-      finnish: current?.finnish ?? finnish,
+      finnish: current?.finnish ?? word.finnish.trim().normalize("NFC"),
       english: word.english.trim(),
       danish: word.danish.trim() || null,
       example: word.example.trim() || null,

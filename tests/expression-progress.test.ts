@@ -113,6 +113,7 @@ test("canonical identity handles case, Unicode and punctuation without merging d
   assert.equal(projected.length, 1);
   assert.equal(projected[0].mastery, 5);
   assert.equal(projected[0].correctCount, 10);
+  assert.equal(projected[0].finnish, originals[0].finnish);
   assert.equal(originals.length, 2);
   assert.equal(practiceCounts(projected).secure, 1);
 });
@@ -200,4 +201,11 @@ test("review includes at most one legacy-high item and prioritizes an actual new
   const selected = selectReviewWords(projected, new Date("2026-10-10T08:00Z"));
   assert.equal(selected.filter((w) => w.evidence?.legacyStrong).length, 1);
   assert.equal(selected[0].finnish, "uusi");
+});
+
+test("partially confirmed legacy items cannot evade the single confirmation slot", () => {
+  const originals = Array.from({ length: 6 }, (_, i) => word({ finnish: `legacy${i}`, nextReviewAt: base }));
+  const projected = projectExpressions(originals, originals.slice(0, 3).map((w, i) => attempt(0, { finnish: w.finnish, answerIndex: i })));
+  const selected = selectReviewWords(projected, new Date("2026-10-10T08:00Z"));
+  assert.equal(selected.filter((w) => w.evidence?.legacyStrong).length, 1);
 });
