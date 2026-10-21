@@ -9,6 +9,7 @@ import { getStatsData } from "@/lib/stats-server";
 import { closeReasonLabel } from "@/lib/session-diagnostics";
 import type { WordProgress } from "@/lib/learning-types";
 import { practiceCounts } from "@/lib/learning-plan";
+import { isStrong } from "@/lib/expression-progress";
 import { A1_TEST_PASSES_REQUIRED, A1_TEST_STRONG_GOAL } from "@/lib/a1-test";
 import { LEVEL_ROADMAP } from "@/lib/level-roadmap";
 import "./stats.css";
@@ -23,9 +24,10 @@ export default async function StatsPage() {
   const [learning, data] = await Promise.all([getLearningSnapshot(), getStatsData()]);
   const words = learning.wordProgress;
   const evidence = practiceCounts(words);
-  const secure = words.filter((word) => word.mastery >= 4);
+  const secure = words.filter(isStrong);
+  const legacyHigh = words.filter((word) => word.evidence?.legacyStrong && !isStrong(word));
   const focusWords = [...words]
-    .filter((word) => word.mastery < 4 && word.incorrectCount > 0)
+    .filter((word) => word.evidence?.needsCheck || (!isStrong(word) && word.incorrectCount > 0))
     .sort((a, b) => (b.incorrectCount - a.incorrectCount) || (a.mastery - b.mastery))
     .slice(0, 5);
   const practicedGrammar = data.grammar
@@ -105,7 +107,7 @@ export default async function StatsPage() {
         <section className="insights-kpis" aria-label="Dine nøgletal">
           <Metric symbol="◷" tone="green" value={formatDuration(data.practice.totalSeconds)} label="Registreret øvetid" note="Live-tid hvor tilgængelig; ellers klokketid" />
           <Metric symbol="◉" tone="blue" value={number.format(data.sessions.length)} label="Samtaledele" note="Afbrydelser kan dele en øvetur i flere" />
-          <Metric symbol="✦" tone="lime" value={number.format(words.length)} label="Ord og udtryk mødt" note={`${number.format(evidence.introduced + evidence.once)} kun nævnt eller ét forsøg`} />
+          <Metric symbol="✦" tone="lime" value={number.format(words.length)} label="Unikke ord og udtryk mødt" note={`${number.format(legacyHigh.length)} med tidligere høj score · historik bevaret`} />
           <Metric symbol="$" tone="amber" value={formatUsd(learning.estimatedApiCostUsd)} label="Estimeret API-forbrug" note="Taletid estimeret · øvrige kald registreret" />
         </section>
 
@@ -169,7 +171,7 @@ export default async function StatsPage() {
 
         <div className="insights-section-heading">
           <div><span className="insights-kicker">02 / DINE ORD</span><h2>Et ord ad gangen.</h2></div>
-          <p>Én vurdering er ikke beherskelse. Tallene gælder både ord og hele udtryk og bygger på tutorens samtaleanalyse.</p>
+          <p>Stærkt betyder selvstændig finsk tale på tre forskellige dage over mindst en uge. Forståelse og gentagelse måles særskilt.</p>
         </div>
 
         <div className="insights-words-grid">
@@ -177,19 +179,22 @@ export default async function StatsPage() {
             <span className="insights-kicker">ORDFORRÅD LIGE NU</span>
             <h3 id="wordscape-title">Hvor dine udtryk står</h3>
             <p className="insights-muted">{words.length ? `${number.format(words.length)} ord og udtryk er registreret. ${number.format(words.filter((word) => word.finnish.includes(" ")).length)} af posterne er flerordsudtryk.` : "Når du har øvet i en samtale, vises udtrykkene her."}</p>
-            <div className="insights-wordstack" role="img" aria-label={`${evidence.introduced} kun nævnt, ${evidence.once} med ét forsøg, ${evidence.practicing} øvet flere gange, ${evidence.secure} sikre efter score`}>
+            <div className="insights-wordstack" role="img" aria-label={`${evidence.introduced} mødt, ${evidence.once} under indlæring, ${evidence.practicing} genkaldt eller gencheck, ${evidence.legacy} tidligere høj score, ${evidence.secure} bekræftet stærke`}>
               {evidence.introduced > 0 && <span className="introduced" style={{ width: `${evidence.introduced / wordTotal * 100}%` }} />}
               {evidence.once > 0 && <span className="once" style={{ width: `${evidence.once / wordTotal * 100}%` }} />}
               {evidence.practicing > 0 && <span className="building" style={{ width: `${evidence.practicing / wordTotal * 100}%` }} />}
               {evidence.secure > 0 && <span className="secure" style={{ width: `${evidence.secure / wordTotal * 100}%` }} />}
+              {evidence.legacy > 0 && <span className="legacy" style={{ width: `${evidence.legacy / wordTotal * 100}%` }} />}
             </div>
             <div className="insights-wordlegend">
-              <span><i className="introduced" /> <strong>{evidence.introduced}</strong> kun nævnt <small>0 vurderede forsøg</small></span>
-              <span><i className="once" /> <strong>{evidence.once}</strong> ét forsøg <small>ikke nok til at være sikkert</small></span>
-              <span><i className="building" /> <strong>{evidence.practicing}</strong> øvet flere gange <small>mindst 2 vurderinger</small></span>
-              <span><i className="secure" /> <strong>{evidence.secure}</strong> sikre efter score <small>4–5/5</small></span>
+              <span><i className="introduced" /> <strong>{evidence.introduced}</strong> mødt <small>ingen dokumenteret genkaldelse</small></span>
+              <span><i className="once" /> <strong>{evidence.once}</strong> under indlæring <small>historik, forståelse eller hjælp</small></span>
+              <span><i className="building" /> <strong>{evidence.practicing}</strong> genkaldt / gencheck <small>på vej mod bekræftelse</small></span>
+              <span><i className="legacy" /> <strong>{evidence.legacy}</strong> tidligere høj score <small>afventer bekræftelse</small></span>
+              <span><i className="secure" /> <strong>{evidence.secure}</strong> bekræftet stærke <small>3 dage over mindst 1 uge</small></span>
             </div>
-            <p className="insights-muted">{evidence.confirmedAcrossDays} score-sikre udtryk er også registreret korrekte på mindst to forskellige dage siden den nye dagstælling blev indført. Historiske dage kan ikke genskabes sikkert.</p>
+            <p className="insights-muted">Din gamle fremgang er bevaret: {legacyHigh.length} udtryk med tidligere høj score afventer bekræftelse. Vi tjekker dem gradvist, ikke hele listen igen. Gamle vurderinger kan ikke genskabes som sikre, selvstændige forsøg.</p>
+            <p className="insights-muted">Nye dokumenterede forsøg: {words.reduce((n, w) => n + (w.evidence?.productionCorrect ?? 0), 0)} korrekte uden hjælp på finsk · {words.reduce((n, w) => n + (w.evidence?.comprehensionCorrect ?? 0), 0)} forstået korrekt · {words.reduce((n, w) => n + (w.evidence?.assistedCorrect ?? 0), 0)} korrekte med hjælp. Mindst 20 timer mellem tællende genkaldelsesdage.</p>
             <div className="insights-review-callout"><span className="insights-review-icon">↺</span><div><strong>{learning.dueWordCount} poster er klar til repetition</strong><p>Vi vælger kun få varierede udtryk pr. samtale, så der også bliver plads til nyt stof.</p></div></div>
           </section>
 
@@ -205,11 +210,11 @@ export default async function StatsPage() {
 
         <div className="insights-knowledge-grid">
           <section className="insights-panel insights-wins" aria-labelledby="wins-title">
-            <span className="insights-kicker">HØJ ØVESCORE</span>
+            <span className="insights-kicker">DOKUMENTERET GENKALDELSE</span>
             <h3 id="wins-title">Dine seneste stærke udtryk</h3>
             {recentWins.length ? <div className="insights-win-list">{recentWins.map((word) => (
-              <div key={word.finnish}><strong lang="fi">{word.finnish}</strong><span>{word.danish || word.english}</span><small>{word.mastery}/5</small></div>
-            ))}</div> : <p className="insights-muted">De første stærke udtryk dukker op her, når de er vurderet rigtige flere gange.</p>}
+              <div key={word.finnish}><strong lang="fi">{word.finnish}</strong><span>{word.danish || word.english}</span><small>{word.evidence?.productionDays} genkaldelsesdage</small></div>
+            ))}</div> : <p className="insights-muted">De første bekræftede udtryk dukker op efter selvstændige svar på tre forskellige dage over mindst en uge. Din tidligere fremgang ligger stadig i historikken.</p>}
           </section>
           <section className="insights-panel insights-grammar" aria-labelledby="grammar-title">
             <span className="insights-kicker">OGSÅ GRAMMATIK TÆLLER</span>
@@ -259,7 +264,7 @@ function Metric({ symbol, tone, value, label, note }: { symbol: string; tone: st
 }
 
 function WordRow({ word }: { word: WordProgress }) {
-  return <li><div><strong lang="fi">{word.finnish}</strong><span>{word.danish || word.english}</span><small>{word.incorrectCount} {word.incorrectCount === 1 ? "registreret rettelse" : "registrerede rettelser"}</small></div><span className="insights-word-score">{word.mastery}/5</span><span className="insights-word-row-track"><i style={{ width: `${Math.min(100, Math.max(0, word.mastery * 20))}%` }} /></span></li>;
+  return <li><div><strong lang="fi">{word.finnish}</strong><span>{word.danish || word.english}</span><small>{word.evidence?.needsCheck ? "Ny talefejl · kort gencheck anbefales" : `${word.incorrectCount} historiske rettelser`}</small></div><span className="insights-word-score">{Math.min(3, word.evidence?.productionDays ?? 0)}/3 dage</span></li>;
 }
 
 function activityLevel(seconds: number): number {

@@ -1,5 +1,6 @@
 import type { TranscriptLine, WordProgress } from "./learning-types";
 import { copenhagenDay } from "./learning-plan";
+import { expressionKey, expressionStageLabel, isStrong } from "./expression-progress";
 
 export type HistoryScope = "recent_days" | "this_week" | "strong" | "due" | "all";
 export type HistoryQuery = { scope: HistoryScope; days: number; query: string; offset: number; limit: number };
@@ -9,7 +10,7 @@ export type HistoryResult = ReturnType<typeof buildPracticeHistory>;
 export type HistoryState = { queryKey: string; asOf: string; lastOffset: number; result: HistoryResult };
 
 export function historyQueryKey(query: HistoryQuery) {
-  return JSON.stringify([query.scope, query.scope === "recent_days" ? query.days : null, phraseKey(query.query)]);
+  return JSON.stringify(["recall-v2", query.scope, query.scope === "recent_days" ? query.days : null, phraseKey(query.query)]);
 }
 
 export function historyPage(state: HistoryState, offset: number, limit: number) {
@@ -40,7 +41,7 @@ export function historyStartDay(query: HistoryQuery, now: Date): string | null {
 }
 
 export function phraseKey(value: string): string {
-  return value.toLocaleLowerCase("fi-FI").normalize("NFC").replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  return expressionKey(value);
 }
 
 function containsPhrase(text: string, phrase: string): boolean {
@@ -64,7 +65,7 @@ export function buildPracticeHistory(words: WordProgress[], sessions: HistorySes
   const items = [...canonical.values()].flatMap((word) => {
     const key = phraseKey(word.finnish);
     if (!key || (query.query && !phraseKey(`${word.finnish} ${word.english} ${word.danish ?? ""}`).includes(phraseKey(query.query)))) return [];
-    if (query.scope === "strong" && word.mastery < 4) return [];
+    if (query.scope === "strong" && !isStrong(word)) return [];
     if (query.scope === "due" && word.nextReviewAt && new Date(word.nextReviewAt) > now) return [];
     const dated: Array<{ sessionId: number; day: string; evidence: string }> = [];
     for (const s of matchingSessions) {
@@ -81,6 +82,7 @@ export function buildPracticeHistory(words: WordProgress[], sessions: HistorySes
     }
     if (startDay && !dated.length) return [];
     return [{ finnish: word.finnish, english: word.english, mastery: word.mastery,
+      status: expressionStageLabel(word), learningEvidence: word.evidence ?? null,
       correctDayCount: word.correctDayCount, correctCount: word.correctCount, incorrectCount: word.incorrectCount,
       lastFeedback: word.lastFeedback, dates: dated.sort((a, b) => b.day.localeCompare(a.day)) }];
   }).sort((a, b) => startDay
@@ -89,5 +91,5 @@ export function buildPracticeHistory(words: WordProgress[], sessions: HistorySes
   return { scope: query.scope, fromDay: startDay, throughDay: today, total: items.length, offset: query.offset,
     nextOffset: query.offset + query.limit < items.length ? query.offset + query.limit : null,
     items: items.slice(query.offset, query.offset + query.limit),
-    evidenceNote: "Dated entries refer to actual saved session records or literal transcript matches. A transcript match alone does not prove correctness. No date claim is supported for an item with an empty dates array." };
+    evidenceNote: "Strong means independent production on 3 spaced days across at least 7 days, without an unresolved production error. Legacy mastery is historical. learningEvidence separates comprehension, production and repetition. Transcript matches alone do not prove correctness; empty dates support no date claim." };
 }

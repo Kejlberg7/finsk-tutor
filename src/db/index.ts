@@ -164,4 +164,11 @@ async function createSchema(): Promise<void> {
   await sqlClient.unsafe(`ALTER TABLE practice_items ADD COLUMN IF NOT EXISTS evidence text`);
   await sqlClient.unsafe(`CREATE UNIQUE INDEX IF NOT EXISTS practice_items_segment_unique ON practice_items (session_id, segment_end, finnish)`);
   await sqlClient.unsafe(`CREATE INDEX IF NOT EXISTS practice_items_session_idx ON practice_items (session_id)`);
+  await sqlClient.unsafe(`CREATE TABLE IF NOT EXISTS expression_attempts (
+    id serial PRIMARY KEY, session_id integer NOT NULL, answer_index integer NOT NULL,
+    finnish text NOT NULL, mode text NOT NULL, result text NOT NULL, independent integer NOT NULL DEFAULT 0,
+    evidence text NOT NULL, prompt_evidence text NOT NULL, occurred_at timestamptz NOT NULL
+  )`);
+  await sqlClient.unsafe(`CREATE UNIQUE INDEX IF NOT EXISTS expression_attempts_turn_unique ON expression_attempts (session_id, answer_index, finnish)`);
+  await sqlClient.unsafe(`CREATE INDEX IF NOT EXISTS expression_attempts_finnish_idx ON expression_attempts (finnish, occurred_at)`);
 }

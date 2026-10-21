@@ -1,4 +1,5 @@
 import type { A1Assessment } from "@/lib/a1-test";
+import type { ExpressionEvidence } from "./expression-progress";
 
 export type TranscriptLine = {
   speaker: "dig" | "tutor";
@@ -11,6 +12,7 @@ export type DueWord = {
   finnish: string;
   english: string;
   mastery: number;
+  status?: string;
 };
 
 export type WordProgress = DueWord & {
@@ -22,6 +24,7 @@ export type WordProgress = DueWord & {
   lastFeedback: string | null;
   lastSeenAt: string | null;
   nextReviewAt: string | null;
+  evidence?: ExpressionEvidence;
 };
 
 export type SessionRecap = {

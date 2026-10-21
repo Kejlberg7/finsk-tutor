@@ -7,6 +7,8 @@ import type { RecentSession } from "@/lib/learning-types";
 import { cleanFragments, compactTranscript } from "@/lib/transcript";
 import { parseHistoryQuery } from "@/lib/practice-history";
 import { getPracticeHistory } from "@/lib/practice-history-server";
+import { getLearningSnapshot } from "@/lib/learning";
+import { EXPRESSION_POLICY, isStrong } from "@/lib/expression-progress";
 
 export async function GET(request: Request) {
   const noStore = { "Cache-Control": "no-store" };
@@ -103,11 +105,20 @@ export async function GET(request: Request) {
       receivedAt: sessionDiagnostics.createdAt,
     }).from(sessionDiagnostics).orderBy(desc(sessionDiagnostics.occurredAt)).limit(diagnosticLimit);
 
+    const learning = await getLearningSnapshot();
     return NextResponse.json({
       generatedAt: new Date().toISOString(),
+      expressionProgress: {
+        available: learning.memoryReady,
+        policy: EXPRESSION_POLICY, uniqueExpressions: learning.knownWordCount,
+        verifiedStrong: learning.masteredWordCount,
+        legacyHigh: learning.wordProgress.filter((word) => word.evidence?.legacyStrong && !isStrong(word)).length,
+        recordedAttempts: learning.wordProgress.reduce((n, word) => n + (word.evidence?.attempts ?? 0), 0),
+        rule: "3 independent production days, >=20h between checks, spanning >=7 days; no unresolved production error",
+      },
       sessions,
       diagnostics,
-      ...(historyQuery ? { practiceHistory: await getPracticeHistory(historyQuery) } : {}),
+      ...(historyQuery ? { practiceHistory: await getPracticeHistory(historyQuery, learning) } : {}),
       notes: notes.map((note) => ({
         id: note.id,
         sessionId: note.sessionId,

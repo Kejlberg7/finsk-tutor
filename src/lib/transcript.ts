@@ -1,5 +1,29 @@
 import type { TranscriptLine } from "@/lib/learning-types";
 
+function isBackchannel(text: string): boolean {
+  return /^(?:yes|yeah|okay|ok|right|nice|good|great|exactly|mhm|mm|uh huh|aha)[\s,.!…-]*$/i.test(text.trim());
+}
+
+/** Keep original indices while combining an answer interrupted only by a listening sound. */
+export function scoringTurns(transcript: TranscriptLine[]): TranscriptLine[] {
+  const turns = transcript.map((line) => ({ ...line }));
+  let answer = -1;
+  for (let index = 0; index < turns.length; index++) {
+    const line = turns[index];
+    if (line.speaker === "tutor") {
+      if (!isBackchannel(line.text)) answer = -1;
+      continue;
+    }
+    const previous = turns[answer];
+    if (previous && (previous.endMs === undefined || line.startMs === undefined || line.startMs - previous.endMs <= 8000)) {
+      previous.text = `${previous.text.trim()} ${line.text.trim()}`;
+      previous.endMs = line.endMs ?? previous.endMs;
+      line.text = "";
+    } else answer = index;
+  }
+  return turns;
+}
+
 export function compactTranscript(fragments: TranscriptLine[]): TranscriptLine[] {
   const result: TranscriptLine[] = [];
   for (const fragment of fragments) {
@@ -69,11 +93,22 @@ export function completedTurnCutoff(fragments: TranscriptLine[]): number {
   while (lastRunStart > 0 && fragments[lastRunStart - 1].speaker === fragments[lastRunStart].speaker) {
     lastRunStart--;
   }
-  if (fragments[lastRunStart].speaker === "dig") return lastRunStart;
+  const rewindAnswer = (start: number) => {
+    while (start > 1 && fragments[start - 1].speaker === "tutor") {
+      let tutorStart = start - 1;
+      while (tutorStart > 0 && fragments[tutorStart - 1].speaker === "tutor") tutorStart--;
+      if (!isBackchannel(fragments.slice(tutorStart, start).map((line) => line.text).join(""))) break;
+      if (tutorStart === 0 || fragments[tutorStart - 1].speaker !== "dig") break;
+      start = tutorStart - 1;
+      while (start > 0 && fragments[start - 1].speaker === "dig") start--;
+    }
+    return start;
+  };
+  if (fragments[lastRunStart].speaker === "dig") return rewindAnswer(lastRunStart);
   let priorRunStart = lastRunStart - 1;
   if (priorRunStart < 0) return 0;
   while (priorRunStart > 0 && fragments[priorRunStart - 1].speaker === fragments[priorRunStart].speaker) {
     priorRunStart--;
   }
-  return priorRunStart;
+  return rewindAnswer(priorRunStart);
 }

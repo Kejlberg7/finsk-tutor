@@ -1,3 +1,6 @@
+import { isStrong, type ExpressionEvidence } from "./expression-progress";
+export { copenhagenDay } from "./expression-progress";
+
 export type PracticeEvidence = {
   finnish: string;
   english: string;
@@ -7,23 +10,31 @@ export type PracticeEvidence = {
   correctDayCount: number;
   lastSeenAt: string | null;
   nextReviewAt: string | null;
+  evidence?: ExpressionEvidence;
 };
 
-export type PracticeStage = "introduced" | "once" | "practicing" | "secure";
+export type PracticeStage = "introduced" | "once" | "practicing" | "secure" | "legacy";
 export type NewTarget = { finnish: string; english: string };
 
 export function practiceStage(word: PracticeEvidence): PracticeStage {
+  if (word.evidence) {
+    if (isStrong(word)) return "secure";
+    if (word.evidence.productionCorrect || word.evidence.needsCheck) return "practicing";
+    if (word.evidence.legacyStrong) return "legacy";
+    if (word.evidence.attempts) return "once";
+    return word.correctCount + word.incorrectCount ? "once" : "introduced";
+  }
   const attempts = word.correctCount + word.incorrectCount;
   if (attempts === 0) return "introduced";
   if (attempts === 1) return "once";
-  return word.mastery >= 4 ? "secure" : "practicing";
+  return word.mastery >= 4 ? "legacy" : "practicing";
 }
 
 export function practiceCounts(words: PracticeEvidence[]) {
-  const counts = { introduced: 0, once: 0, practicing: 0, secure: 0, confirmedAcrossDays: 0 };
+  const counts = { introduced: 0, once: 0, practicing: 0, secure: 0, legacy: 0, confirmedAcrossDays: 0 };
   for (const word of words) {
     counts[practiceStage(word)] += 1;
-    if (word.mastery >= 4 && word.correctDayCount >= 2) counts.confirmedAcrossDays += 1;
+    if (isStrong(word)) counts.confirmedAcrossDays += 1;
   }
   return counts;
 }
@@ -36,20 +47,23 @@ export function isDue(word: PracticeEvidence, now = new Date()): boolean {
 // learner error (zero correct attempts) as an example of good Finnish.
 export function selectReviewWords<T extends PracticeEvidence>(words: T[], now = new Date(), limit = 5): T[] {
   const due = words.filter((word) => isDue(word, now));
-  const secure = words.filter((word) => word.mastery >= 4);
-  const useful = due.filter((word) => word.correctCount > 0 || word.incorrectCount === 0)
-    .filter((word) => word.incorrectCount > 0 || word.mastery >= 4
+  const secure = words.filter((word) => isStrong(word) || word.evidence?.legacyStrong || word.mastery >= 4);
+  const useful = due.filter((word) => word.evidence?.attempts || word.correctCount > 0 || word.incorrectCount === 0)
+    .filter((word) => word.evidence?.needsCheck || word.incorrectCount > 0 || word.mastery >= 4
       || !secure.some((known) => known.finnish !== word.finnish && phraseSimilarity(known.finnish, word.finnish) >= 0.5));
-  const byAge = (a: T, b: T) => (a.nextReviewAt ?? "").localeCompare(b.nextReviewAt ?? "")
+  const byAge = (a: T, b: T) => Number(Boolean(b.evidence?.needsCheck)) - Number(Boolean(a.evidence?.needsCheck))
+    || (a.nextReviewAt ?? "").localeCompare(b.nextReviewAt ?? "")
     || (a.lastSeenAt ?? "").localeCompare(b.lastSeenAt ?? "");
   const groups = {
     practicing: useful.filter((word) => practiceStage(word) === "practicing").sort(byAge),
     once: useful.filter((word) => practiceStage(word) === "once").sort(byAge),
     introduced: useful.filter((word) => practiceStage(word) === "introduced").sort(byAge),
     secure: useful.filter((word) => practiceStage(word) === "secure").sort(byAge),
+    legacy: useful.filter((word) => practiceStage(word) === "legacy").sort(byAge),
   };
   const selected: T[] = [];
-  for (const stage of ["practicing", "once", "once", "introduced", "secure"] as const) {
+  // One legacy confirmation slot, not an entire re-examination of the old list.
+  for (const stage of ["practicing", "once", "introduced", "legacy", "secure"] as const) {
     const index = groups[stage].findIndex((word) => selected.every((picked) => phraseSimilarity(word.finnish, picked.finnish) < 0.5));
     const word = index < 0 ? undefined : groups[stage].splice(index, 1)[0];
     if (word) selected.push(word);
@@ -142,25 +156,4 @@ export function buildLessonPlan(words: PracticeEvidence[], suggested: NewTarget[
     `4–6 min: Genkald ${old} og det nye materiale uden facit først; gå videre til et beslægtet mål, når det lykkes.`,
   ];
   return { nextLesson: blocks[0], upcomingLessons: blocks, newTargets: targets };
-}
-
-export function copenhagenDay(date: Date): string {
-  const parts = new Intl.DateTimeFormat("en-US", { timeZone: "Europe/Copenhagen", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(date);
-  const part = (type: string) => parts.find((item) => item.type === type)?.value ?? "";
-  return `${part("year")}-${part("month")}-${part("day")}`;
-}
-
-export function nextCorrectDayState(count: number, lastDay: string | null, correct: boolean, now: Date) {
-  if (!correct) return { correctDayCount: count, lastCorrectDay: lastDay };
-  const day = copenhagenDay(now);
-  return { correctDayCount: count + (lastDay === day ? 0 : 1), lastCorrectDay: day };
-}
-
-/** Echoing an answer is practice, but cannot establish independent long-term recall. */
-export function nextWordScores(mastery: number, correctCount: number, incorrectCount: number,
-  result: "correct" | "incorrect" | "introduced", independent: boolean, correctDays: number) {
-  if (result === "incorrect") return { mastery: Math.max(0, mastery - 1), correctCount, incorrectCount: incorrectCount + 1 };
-  if (result !== "correct") return { mastery, correctCount, incorrectCount };
-  const cap = !independent ? 2 : correctDays < 2 ? 3 : 5;
-  return { mastery: Math.max(mastery, Math.min(cap, mastery + 1)), correctCount: correctCount + 1, incorrectCount };
 }

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  buildLessonPlan, chooseNewTargets, copenhagenDay, nextCorrectDayState, practiceCounts, practiceStage, selectReviewWords,
+  buildLessonPlan, chooseNewTargets, copenhagenDay, practiceCounts, practiceStage, selectReviewWords,
   type PracticeEvidence,
 } from "../src/lib/learning-plan";
 
@@ -16,8 +16,8 @@ function word(finnish: string, correctCount: number, incorrectCount: number, mas
 
 test("practice evidence separates introduction, one attempt, repeated practice and score", () => {
   const words = [word("tänään", 0, 0), word("kiitos", 1, 0), word("kotiin", 2, 1), { ...word("haluan levätä", 5, 0, 5), correctDayCount: 2 }];
-  assert.deepEqual(words.map(practiceStage), ["introduced", "once", "practicing", "secure"]);
-  assert.deepEqual(practiceCounts(words), { introduced: 1, once: 1, practicing: 1, secure: 1, confirmedAcrossDays: 1 });
+  assert.deepEqual(words.map(practiceStage), ["introduced", "once", "practicing", "legacy"]);
+  assert.deepEqual(practiceCounts(words), { introduced: 1, once: 1, practicing: 1, legacy: 1, secure: 0, confirmedAcrossDays: 0 });
 });
 
 test("review sample is small, mixed and never models an uncorrected error", () => {
@@ -30,7 +30,7 @@ test("review sample is small, mixed and never models an uncorrected error", () =
   ];
   const selected = selectReviewWords(words, now);
   assert.equal(selected.length, 5);
-  assert.deepEqual(selected.map((item) => item.finnish), ["growing", "once a", "once b", "introduced", "secure"]);
+  assert.deepEqual(selected.map((item) => item.finnish), ["growing", "once a", "introduced", "secure", "once b"]);
   assert.equal(selected.some((item) => item.finnish === "wrong learner phrase"), false);
 });
 
@@ -67,12 +67,4 @@ test("only an explicit review-only mode suppresses new targets", () => {
 test("correct days use Copenhagen local calendar days", () => {
   assert.equal(copenhagenDay(new Date("2026-10-14T21:30:00Z")), "2026-10-14");
   assert.equal(copenhagenDay(new Date("2026-10-14T22:30:00Z")), "2026-10-15");
-  assert.deepEqual(nextCorrectDayState(0, null, true, new Date("2026-10-14T12:00:00Z")),
-    { correctDayCount: 1, lastCorrectDay: "2026-10-14" });
-  assert.deepEqual(nextCorrectDayState(1, "2026-10-14", true, new Date("2026-10-14T21:30:00Z")),
-    { correctDayCount: 1, lastCorrectDay: "2026-10-14" });
-  assert.deepEqual(nextCorrectDayState(1, "2026-10-14", false, new Date("2026-10-15T12:00:00Z")),
-    { correctDayCount: 1, lastCorrectDay: "2026-10-14" });
-  assert.deepEqual(nextCorrectDayState(1, "2026-10-14", true, new Date("2026-10-15T12:00:00Z")),
-    { correctDayCount: 2, lastCorrectDay: "2026-10-15" });
 });

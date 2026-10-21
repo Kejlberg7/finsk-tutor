@@ -1,7 +1,7 @@
 import "server-only";
 import { desc, eq, gte, inArray } from "drizzle-orm";
 import { ensureDatabaseSchema, getDatabase, isDatabaseConfigured } from "@/db";
-import { practiceItems, practiceSessions } from "@/db/schema";
+import { expressionAttempts, practiceItems, practiceSessions } from "@/db/schema";
 import { getLearningSnapshot } from "./learning";
 import { buildPracticeHistory, historyPage, historyQueryKey, type HistoryQuery } from "./practice-history";
 import { cleanFragments } from "./transcript";
@@ -31,8 +31,10 @@ export async function getPracticeHistory(query: HistoryQuery, snapshot?: Learnin
     transcript: Array.isArray(row.transcript) ? cleanFragments(row.transcript) : [] }));
   const records = sessions.length ? await db.select().from(practiceItems)
     .where(inArray(practiceItems.sessionId, sessions.map((s) => s.id))) : [];
+  const attempts = sessions.length ? await db.select().from(expressionAttempts)
+    .where(inArray(expressionAttempts.sessionId, sessions.map((s) => s.id))) : [];
   const result = buildPracticeHistory(memory.wordProgress, sessions,
-    records.map((r) => ({ ...r, occurredAt: r.occurredAt.toISOString() })), { ...query, offset: 0, limit: 50_000 }, now);
+    [...records, ...attempts].map((r) => ({ ...r, occurredAt: r.occurredAt.toISOString() })), { ...query, offset: 0, limit: 50_000 }, now);
   const state = { queryKey: historyQueryKey(query), asOf: now.toISOString(), lastOffset: query.offset, result };
   if (sessionId) await db.update(practiceSessions).set({ reviewState: state }).where(eq(practiceSessions.id, sessionId));
   return historyPage(state, query.offset, query.limit);

@@ -33,6 +33,20 @@ export const vocabulary = pgTable(
   (table) => [uniqueIndex("vocabulary_finnish_unique").on(table.finnish)],
 );
 
+// Separate from legacy segment-level scores: never infer old independent attempts.
+export const expressionAttempts = pgTable("expression_attempts", {
+  id: serial("id").primaryKey(),
+  sessionId: integer("session_id").notNull(),
+  answerIndex: integer("answer_index").notNull(),
+  finnish: text("finnish").notNull(),
+  mode: text("mode").notNull(),
+  result: text("result").notNull(),
+  independent: integer("independent").notNull().default(0),
+  evidence: text("evidence").notNull(),
+  promptEvidence: text("prompt_evidence").notNull(),
+  occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
+}, (table) => [uniqueIndex("expression_attempts_turn_unique").on(table.sessionId, table.answerIndex, table.finnish)]);
+
 export const grammarSkills = pgTable(
   "grammar_skills",
   {

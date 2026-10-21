@@ -1,16 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { buildPracticeHistory, historyPage, historyStartDay, parseHistoryQuery, type HistoryQuery } from "../src/lib/practice-history";
-import { nextWordScores } from "../src/lib/learning-plan";
 import { extractIdeaCues } from "../src/lib/idea-cue";
 import { learnerUtterances } from "../src/lib/transcript";
 import { makeSessionRecovery, parseSessionRecovery } from "../src/lib/session-recovery";
 import { tutorIntervention } from "../src/lib/tutor-interventions";
 import type { WordProgress } from "../src/lib/learning-types";
+import { expressionEvidence } from "../src/lib/expression-progress";
 
 const word = (finnish: string, mastery = 4): WordProgress => ({ finnish, mastery, english: "Example", danish: null,
   example: null, correctCount: 4, incorrectCount: 0, correctDayCount: 2, lastFeedback: null,
-  lastSeenAt: "2026-10-21T06:00:00Z", nextReviewAt: "2026-10-23T06:00:00Z" });
+  lastSeenAt: "2026-10-21T06:00:00Z", nextReviewAt: "2026-10-23T06:00:00Z",
+  evidence: expressionEvidence(mastery >= 4 ? [0, 1, 7].map((day) => ({ finnish, sessionId: day + 1, answerIndex: 1,
+    mode: "production", independent: true, result: "correct", evidence: finnish, promptEvidence: "Say it in Finnish",
+    occurredAt: new Date(Date.parse("2026-10-01T08:00Z") + day * 86400_000).toISOString() })) : []) });
 const query: HistoryQuery = { scope: "this_week", days: 3, query: "", offset: 0, limit: 2 };
 const now = new Date("2026-10-21T08:00:00Z");
 
@@ -90,14 +93,4 @@ test("a pinned review set stays stable when new practice changes word scores or 
 test("punctuation variants do not become separate review targets", () => {
   const result = buildPracticeHistory([word("Saanko kahvia nyt?"), word("saanko kahvia nyt.")], [], [], { ...query, scope: "all" }, now);
   assert.equal(result.total, 1);
-});
-
-test("repetition alone cannot create strong expressions; independent recall must span days", () => {
-  let mastery = 0;
-  for (let i = 0; i < 10; i++) mastery = nextWordScores(mastery, i, 0, "correct", false, 0).mastery;
-  assert.equal(mastery, 2);
-  assert.equal(nextWordScores(3, 5, 0, "correct", true, 1).mastery, 3);
-  assert.equal(nextWordScores(3, 5, 0, "correct", true, 2).mastery, 4);
-  assert.equal(nextWordScores(5, 8, 0, "incorrect", true, 3).mastery, 4);
-  assert.equal(nextWordScores(5, 8, 0, "correct", false, 3).mastery, 5);
 });

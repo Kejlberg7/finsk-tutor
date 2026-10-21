@@ -36,6 +36,32 @@ elev/tutor-udvekslinger scores; resten vurderes, når samtalen stoppes og gemmes
 Derfor tælles de samme transkriptfragmenter ikke igen ved afslutningen.
 Vurderingen bygger på transskript og tydelige rettelser, ikke en måling af accent.
 
+### Dokumenteret genkaldelse (recall-v2)
+
+Ord og udtryk har én fælles identitet på tværs af store/små bogstaver,
+Unicode og tegnsætning. Historiske rækker/scorer slettes ikke og summeres ikke
+ukritisk ved dubletter. Gamle høje scorer vises som **afventer bekræftelse**.
+
+Den nye append-only `expression_attempts`-journal gemmer hvert konkret forsøg
+med session, absolut svarindeks, dato, opgavetype, hjælp, resultat samt det
+verificerede spørgsmål og hele elevsvaret. Unikhed på session/svar/udtryk gør
+gentagne gemninger idempotente. Analysemodellen må kun vælge færdige svar i
+checkpointets interval. Usikre/manglende eller modstridende citater tæller ikke.
+En netop leveret finsk model kan ikke give selvstændig produktionskredit.
+
+**Stærkt** kræver selvstændig finsk produktion på tre forskellige danske
+kalenderdage, mindst 20 timer mellem tællende tjek og mindst syv døgn fra første
+til seneste tællende genkaldelse. Det er appens praktiske regel, ikke en CEFR-
+standard. Forståelse og gentagelser tælles separat. En ny produktionsfejl
+kræver et forsinket gencheck; tidligere opnået fremgang bevares. Ingen automatisk
+nulstilling, blot fordi et udtryk er forfaldent til repetition.
+
+At nævne eller gentage et kendt udtryk flytter ikke dets eksisterende interval.
+Selvstændig succes spreder tjek over 1, 3, 7 og efter bekræftelse 14–60 dage.
+Der vælges højst ét gammelt højscore-udtryk i startplanens korte review.
+Milepæle, A1-adgang, historikværktøjer og statistik bruger samme bekræftede tal.
+Læse-API'et viser `expressionProgress` og `learningEvidence` for efterkontrol.
+
 Forsiden viser de seneste samtaler med transskript og en indbakke til idéer.
 Under samtalen kan man sige “Notér idé: …” eller “Notér rettelse: …”.
 Tydelige beskrivelser af app-problemer (fx gentagelser eller afbrudt gemning)

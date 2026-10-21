@@ -1,15 +1,16 @@
 import "server-only";
-import { and, asc, count, desc, eq, gte, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, isNotNull, sql } from "drizzle-orm";
 import { ensureDatabaseSchema, getDatabase, isDatabaseConfigured } from "@/db";
-import { apiUsageEvents, grammarSkills, learnerProfile, practiceItems, practiceSessions, vocabulary } from "@/db/schema";
+import { apiUsageEvents, expressionAttempts, grammarSkills, learnerProfile, practiceItems, practiceSessions, vocabulary } from "@/db/schema";
 import { buildLiveInstructions, buildTutorBackendInstructions } from "./tutor-prompts";
 import { collectTranscriptFeedback, saveFeedbackNote } from "./feedback-notes";
 import type { LearningSnapshot, SessionRecap, TranscriptLine } from "@/lib/learning-types";
 import { estimateResponseCostUsd, readResponseTokenUsage } from "@/lib/api-cost";
-import { compactTranscript, completedTurnCutoff, learnerUtterances } from "@/lib/transcript";
+import { compactTranscript, completedTurnCutoff, learnerUtterances, scoringTurns } from "@/lib/transcript";
 import { extractIdeaCues } from "./idea-cue";
 import { phraseKey } from "./practice-history";
-import { buildLessonPlan, nextCorrectDayState, nextWordScores, selectReviewWords, type NewTarget } from "@/lib/learning-plan";
+import { buildLessonPlan, isDue, selectReviewWords, type NewTarget } from "@/lib/learning-plan";
+import { expressionKey, expressionStageLabel, isStrong, projectExpressions, verifiedAttempts, type ExpressionAttempt, type ProposedAttempt } from "./expression-progress";
 import { a1OralLevel, a1TestEligible, determineA1Outcome, verifyA1Evidence, type A1Assessment, type A1Checks, type SessionKind } from "@/lib/a1-test";
 
 const A1_TEST_INSTRUCTIONS = `
@@ -67,6 +68,7 @@ type SessionReview = {
     independent: boolean;
     evidence: string;
     feedback: string;
+    attempts: Array<ProposedAttempt & { offsetMs?: number }>;
   }>;
   grammar: Array<{
     key: string;
@@ -82,7 +84,7 @@ export async function getLearningSnapshot(): Promise<LearningSnapshot> {
     await ensureDatabaseSchema();
     const db = getDatabase();
     const now = new Date();
-    const [profiles, words, totals, mastered, dueTotal, completed, practiceTime, voiceUsage, modelUsage, recentSessions, a1Tests] = await Promise.all([
+    const [profiles, words, attempts, completed, practiceTime, voiceUsage, modelUsage, recentSessions, a1Tests] = await Promise.all([
       db.select().from(learnerProfile).where(eq(learnerProfile.id, 1)).limit(1),
       db
         .select({
@@ -100,10 +102,7 @@ export async function getLearningSnapshot(): Promise<LearningSnapshot> {
         })
         .from(vocabulary)
         .orderBy(asc(vocabulary.mastery), desc(vocabulary.incorrectCount), asc(vocabulary.nextReviewAt)),
-      db.select({ value: count() }).from(vocabulary),
-      db.select({ value: count() }).from(vocabulary).where(gte(vocabulary.mastery, 4)),
-      db.select({ value: count() }).from(vocabulary)
-        .where(or(isNull(vocabulary.nextReviewAt), lte(vocabulary.nextReviewAt, now))),
+      db.select().from(expressionAttempts),
       db.select({ value: count() }).from(practiceSessions)
         .where(eq(practiceSessions.status, "completed")),
       db.select({ value: sql<string>`COALESCE(SUM(CASE WHEN ${practiceSessions.voiceSeconds} > 0 THEN ${practiceSessions.voiceSeconds} ELSE FLOOR(GREATEST(0, EXTRACT(EPOCH FROM (${practiceSessions.endedAt} - ${practiceSessions.startedAt})))) END), 0)` })
@@ -125,18 +124,19 @@ export async function getLearningSnapshot(): Promise<LearningSnapshot> {
         .orderBy(desc(practiceSessions.endedAt)),
     ]);
     const profile = profiles[0];
-    const progress = words.map((word) => ({
+    const progress = projectExpressions(words.map((word) => ({
       ...word,
       lastSeenAt: word.lastSeenAt?.toISOString() ?? null,
       nextReviewAt: word.nextReviewAt?.toISOString() ?? null,
-    }));
+    })), attempts.map((a) => ({ ...a, mode: a.mode as ExpressionAttempt["mode"], result: a.result as ExpressionAttempt["result"],
+      independent: a.independent === 1, occurredAt: a.occurredAt.toISOString() })));
     const plan = buildLessonPlan(progress, Array.isArray(profile?.nextTargets) ? profile.nextTargets : [],
       profile?.reviewOnlyNextSession === 1, now);
     const due = selectReviewWords(progress, now).map((word) => ({
-      finnish: word.finnish, english: word.english, mastery: word.mastery,
+      finnish: word.finnish, english: word.english, mastery: word.mastery, status: expressionStageLabel(word),
     }));
 
-    const strongCount = mastered[0]?.value ?? 0;
+    const strongCount = progress.filter(isStrong).length;
     const a1Passes = a1Tests.filter((test) => test.assessment?.outcome === "passed").length;
 
     return {
@@ -148,14 +148,14 @@ export async function getLearningSnapshot(): Promise<LearningSnapshot> {
       reviewOnlyPlanned: profile?.reviewOnlyNextSession === 1,
       dueWords: due,
       wordProgress: progress,
-      knownWordCount: totals[0]?.value ?? 0,
+      knownWordCount: progress.length,
       masteredWordCount: strongCount,
       a1Test: {
         eligible: a1TestEligible(strongCount) || a1Passes > 0, passes: a1Passes,
         latest: a1Tests[0]?.assessment ?? null,
         latestAt: a1Tests[0]?.endedAt?.toISOString() ?? null,
       },
-      dueWordCount: dueTotal[0]?.value ?? 0,
+      dueWordCount: progress.filter((word) => isDue(word, now)).length,
       completedSessionCount: completed[0]?.value ?? 0,
       totalPracticeSeconds: Math.floor(Number(practiceTime[0]?.value ?? 0)),
       estimatedApiCostUsd: Number((Number(voiceUsage[0]?.value ?? 0) * 0.05 / 60 + Number(modelUsage[0]?.value ?? 0)).toFixed(4)),
@@ -228,7 +228,9 @@ export async function checkpointPracticeSession(id: number, fragments: Transcrip
   await collectTranscriptFeedback(id, fragments);
   if (!freshTranscript.length) return noChange();
 
-  const review = await analyseTranscript(fullTranscript.slice(-40), await getLearningSnapshot(), freshTranscript, id);
+  const review = await analyseTranscript(fullTranscript, await getLearningSnapshot(), freshTranscript, id,
+    { from: compactTranscript(fragments.slice(0, session.progressCursor)).length,
+      to: compactTranscript(fragments.slice(0, processUntil)).length });
   let applied = false;
   await db.transaction(async (tx) => {
     const locked = await tx.select({ progressCursor: practiceSessions.progressCursor, status: practiceSessions.status })
@@ -241,8 +243,8 @@ export async function checkpointPracticeSession(id: number, fragments: Transcrip
   return {
     learning: await getLearningSnapshot(),
     progressCursor: applied ? processUntil : session.progressCursor,
-    correctWords: applied ? review.words.filter((word) => word.result === "correct").map((word) => word.finnish).slice(0, 8) : [],
-    difficultWords: applied ? review.words.filter((word) => word.result === "incorrect").map((word) => word.finnish).slice(0, 8) : [],
+    correctWords: applied ? review.words.filter((word) => word.attempts.some((a) => a.result === "correct" && a.independent && a.mode === "production")).map((word) => word.finnish).slice(0, 8) : [],
+    difficultWords: applied ? review.words.filter((word) => word.attempts.some((a) => a.result === "incorrect" && a.independent)).map((word) => word.finnish).slice(0, 8) : [],
   };
 }
 
@@ -290,7 +292,8 @@ export async function completePracticeSession(id: number, fragments: TranscriptL
         .where(eq(practiceSessions.id, id));
       return getLearningSnapshot();
     }
-    const review = await analyseTranscript(cleanTranscript, await getLearningSnapshot(), freshTranscript, id);
+    const review = await analyseTranscript(cleanTranscript, await getLearningSnapshot(), freshTranscript, id,
+      { from: compactTranscript(fragments.slice(0, session.progressCursor)).length, to: cleanTranscript.length });
     await db.transaction(async (tx) => {
       await applyReview(review, true, tx, id, fragments.length);
       await tx.update(practiceSessions)
@@ -373,10 +376,12 @@ async function storeResponseUsage(sessionId: number, payload: unknown): Promise<
   }
 }
 
-async function analyseTranscript(transcript: TranscriptLine[], memory: LearningSnapshot, scoringTranscript = transcript, sessionId?: number): Promise<SessionReview> {
+async function analyseTranscript(transcript: TranscriptLine[], memory: LearningSnapshot, scoringTranscript = transcript, sessionId?: number,
+  range = { from: 0, to: transcript.length }): Promise<SessionReview> {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) throw new Error("OPENAI_API_KEY mangler på serveren.");
 
+  const numberedTurns = scoringTurns(transcript);
   const response = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
@@ -384,13 +389,14 @@ async function analyseTranscript(transcript: TranscriptLine[], memory: LearningS
       model: "gpt-6-luna",
       reasoning: { effort: "low" },
       store: false,
-      max_output_tokens: 3500,
+      max_output_tokens: 6500,
       input: [
         {
           role: "system",
           content:
             `You evaluate a Finnish tutoring transcript. Evaluate completed learner answers independently of the tutor's praise. Transcription can be imperfect: score only clearly supported attempts; otherwise use introduced. A tutor correction may itself be wrong; accept valid alternatives.
-Extract words and grammar results only from scoringTranscript; transcript and priorLearning provide context for summary and planning, not evidence of a new scored attempt. Ignore app-feedback notes as lesson material. If scoringTranscript is empty, return empty words and grammar arrays. One result per canonical word or SHORT valid Finnish phrase per segment, not every full sentence or inflected restatement. If the learner made a mistake, use the corrected VALID Finnish form as the key and result=incorrect; put the learner's mistake in feedback. Never store an ungrammatical learner attempt as a model phrase. Prefer the last INDEPENDENT retrieval attempt. A successful assisted repeat after a failed retrieval does not erase that recall error: score incorrect with the failed learner quote and mention the repair in feedback. If there were only repetitions, evaluate the most recent clear repetition with independent=false. Mention pronunciation only if the tutor explicitly corrected pronunciation; do not infer accent from transcript spelling. Use stable lowercase ASCII keys for grammar topics.
+Extract words and grammar results only from scoringTranscript; numberedTurns and priorLearning provide context. Ignore app-feedback notes as lesson material. If scoringTranscript is empty, return empty words and grammar arrays. One word entry per canonical word or SHORT valid Finnish phrase, not every full sentence or inflected restatement. Never store an ungrammatical learner attempt or an English label as a Finnish target. If the learner made a mistake, use the corrected VALID Finnish form as the key. Mention pronunciation only if the tutor explicitly corrected pronunciation; do not infer accent from transcript spelling. Use stable lowercase ASCII keys for grammar topics.
+For each word, attempts must list EACH distinct completed learner attempt in the scoring range, with its absolute answerIndex and promptIndex from numberedTurns. The attempt's evidence must be the EXACT WHOLE learner turn, including errors, not a cherry-picked correct fragment. promptEvidence is an exact tutor quote. Use the original index numbers, never renumber. mode=production for saying Finnish from a meaning/roleplay prompt, comprehension for explaining/answering Finnish meaning, repeat for echoing an answer or correction just supplied. independent=false for repeats, hints, or a target supplied within the recent exercise; a translation-back seconds after hearing the target is not delayed independent recall. Keep an initial incorrect independent attempt AND its assisted repair as separate attempts. Do not give multiple credit entries for the same utterance or count its words separately when the whole phrase is the target. A correct production must actually include the target Finnish form; use the valid actually spoken form as the key when alternatives differ. Only include attempts with answerIndex >= scoringRange.from and < scoringRange.to. Use [] for mere introduction or unclear evidence. Report uncertainty by omitting an attempt, never inventing success. The outer result/independent/evidence summarize the last independent attempt (or assisted attempt if none); they do not determine mastery. Evaluate the Finnish answer independently of tutor praise.
 Write the summary and recap in concise English. Recap.progress must name up to 3 concrete achievements supported by the transcript; recap.needsWork names up to 3 specific remaining difficulties; recap.nextStep states one actionable next move. Empty arrays are okay; do not invent progress or claim a word is mastered after one success.
 For each word result, evidence must be an EXACT short quote from the learner in scoringTranscript. Without a clear learner attempt use introduced and evidence="". independent=true only for unaided retrieval/production or comprehension, with no answer supplied immediately beforehand. Echoing a model or a correction has independent=false even when accurate. Listen through self-corrections and full-duplex backchannels; do not score partial words separately. Evaluate Finnish independently of the tutor's praise: 'paljonko tämä maksaa on' has an extra on; 'uuden' is not 'yhden'; 'menään' is not the correct model for 'I go' (menen). Do not give a correct result simply because the tutor said perfect.
 Extract explicit app ideas, requested fixes and persistent teaching preferences into feedbackNotes, even if the learner says them naturally in Danish (for example 'en note til mig selv senere'). Return a concise Danish content and an EXACT quote from learner speech as evidence. Ordinary Finnish mistakes, requests to repeat once and grammar questions are not app feedback. Return [] when none. Never use tutor speech as evidence.
@@ -410,14 +416,17 @@ Never plan a full drill of phrases the learner already used successfully. The le
               currentFocus: memory.currentFocus,
               upcomingLessons: memory.upcomingLessons,
               dueWords: memory.dueWords.map((word) => ({ finnish: word.finnish, english: word.english })),
-              weakestWords: memory.wordProgress.slice(0, 10).map((word) => ({
+              weakestWords: memory.wordProgress.filter((word) => !isStrong(word))
+                .sort((a, b) => Number(Boolean(b.evidence?.needsCheck)) - Number(Boolean(a.evidence?.needsCheck)))
+                .slice(0, 10).map((word) => ({
                 finnish: word.finnish,
-                mastery: word.mastery,
-                incorrectCount: word.incorrectCount,
+                status: expressionStageLabel(word),
+                learningEvidence: word.evidence,
               })),
               knownFinnish: memory.wordProgress.map((word) => word.finnish),
             },
-            transcript,
+            numberedTurns: numberedTurns.map((line, index) => ({ index, ...line })).filter((line) => line.text.trim()),
+            scoringRange: range,
             scoringTranscript,
           }),
         },
@@ -462,8 +471,14 @@ Never plan a full drill of phrases the learner already used successfully. The le
                     independent: { type: "boolean" },
                     evidence: { type: "string" },
                     feedback: { type: "string" },
+                    attempts: { type: "array", items: { type: "object", properties: {
+                      answerIndex: { type: "integer" }, promptIndex: { type: "integer" },
+                      evidence: { type: "string" }, promptEvidence: { type: "string" },
+                      mode: { type: "string", enum: ["production", "comprehension", "repeat"] },
+                      result: { type: "string", enum: ["correct", "incorrect"] }, independent: { type: "boolean" },
+                    }, required: ["answerIndex", "promptIndex", "evidence", "promptEvidence", "mode", "result", "independent"], additionalProperties: false } },
                   },
-                  required: ["finnish", "english", "danish", "example", "result", "independent", "evidence", "feedback"],
+                  required: ["finnish", "english", "danish", "example", "result", "independent", "evidence", "feedback", "attempts"],
                   additionalProperties: false,
                 },
               },
@@ -498,6 +513,7 @@ Never plan a full drill of phrases the learner already used successfully. The le
   const review = JSON.parse(output) as SessionReview;
   const learnerEvidence = learnerUtterances(scoringTranscript).map(phraseKey);
   for (const word of review.words) {
+    word.attempts = verifiedAttempts(word.finnish, word.attempts ?? [], numberedTurns, range);
     const quote = phraseKey(word.evidence ?? "");
     if (!quote || !learnerEvidence.some((line) => line.includes(quote))) {
       word.result = "introduced"; word.independent = false; word.evidence = "";
@@ -523,6 +539,8 @@ async function applyReview(
   segmentEnd: number,
 ): Promise<void> {
   const now = new Date();
+  const startedAt = (await db.select({ startedAt: practiceSessions.startedAt }).from(practiceSessions)
+    .where(eq(practiceSessions.id, sessionId)).limit(1))[0]?.startedAt ?? now;
   const upcomingLessons = (Array.isArray(review.upcomingLessons) ? review.upcomingLessons : [])
     .filter((lesson): lesson is string => typeof lesson === "string")
     .map((lesson) => lesson.trim())
@@ -556,34 +574,40 @@ async function applyReview(
       },
     });
 
-  for (const word of uniqueBy(review.words, (item) => normalise(item.finnish))) {
-    const finnish = normalise(word.finnish);
+  const previousWords = await db.select().from(vocabulary);
+  for (const word of uniqueBy(review.words, (item) => expressionKey(item.finnish))) {
+    const finnish = expressionKey(word.finnish);
     if (!finnish) continue;
-    const existing = await db.select().from(vocabulary).where(eq(vocabulary.finnish, finnish)).for("update").limit(1);
+    const alias = previousWords.filter((item) => expressionKey(item.finnish) === finnish)
+      .sort((a, b) => (b.lastSeenAt?.getTime() ?? 0) - (a.lastSeenAt?.getTime() ?? 0))[0];
+    const existing = alias ? await db.select().from(vocabulary).where(eq(vocabulary.id, alias.id)).for("update").limit(1) : [];
     const current = existing[0];
-    const dayState = nextCorrectDayState(current?.correctDayCount ?? 0, current?.lastCorrectDay ?? null,
-      word.result === "correct" && word.independent, now);
-    const scores = nextWordScores(current?.mastery ?? 0, current?.correctCount ?? 0, current?.incorrectCount ?? 0,
-      word.result, word.independent, dayState.correctDayCount);
     const values = {
-      finnish,
+      finnish: current?.finnish ?? finnish,
       english: word.english.trim(),
       danish: word.danish.trim() || null,
       example: word.example.trim() || null,
-      mastery: scores.mastery,
-      correctCount: scores.correctCount,
-      incorrectCount: scores.incorrectCount,
-      ...dayState,
+      // Historical scores are kept as history, never promoted by new v2 events.
+      mastery: current?.mastery ?? 0,
+      correctCount: current?.correctCount ?? 0,
+      incorrectCount: current?.incorrectCount ?? 0,
       lastFeedback: word.result === "incorrect" && word.feedback.trim()
         ? word.feedback.trim().slice(0, 240)
         : current?.lastFeedback ?? null,
       lastSeenAt: now,
-      nextReviewAt: nextReviewDate(scores.mastery, word.result === "correct" && !word.independent ? "introduced" : word.result, now),
+      nextReviewAt: current?.nextReviewAt ?? new Date(now.getTime() + 86400_000),
     };
     await db.insert(vocabulary).values(values).onConflictDoUpdate({ target: vocabulary.finnish, set: values });
     await db.insert(practiceItems).values({ sessionId, segmentEnd, finnish, result: word.result,
       independent: word.independent ? 1 : 0, evidence: word.evidence?.slice(0, 500) || null })
       .onConflictDoNothing();
+    for (const attempt of word.attempts) {
+      const at = attempt.offsetMs === undefined ? now : new Date(startedAt.getTime() + Math.max(0, attempt.offsetMs));
+      await db.insert(expressionAttempts).values({ sessionId, answerIndex: attempt.answerIndex, finnish,
+        mode: attempt.mode, result: attempt.result, independent: attempt.independent ? 1 : 0,
+        evidence: attempt.evidence, promptEvidence: attempt.promptEvidence,
+        occurredAt: new Date(Math.min(now.getTime(), at.getTime())) }).onConflictDoNothing();
+    }
   }
 
   for (const skill of uniqueBy(review.grammar, (item) => normaliseKey(item.key))) {
@@ -618,10 +642,6 @@ function nextScores(mastery: number, correctCount: number, incorrectCount: numbe
 function nextReviewDate(mastery: number, result: ReviewResult, from: Date): Date {
   const days = result === "correct" ? [1, 2, 4, 7, 14, 30][mastery] ?? 30 : 1;
   return new Date(from.getTime() + days * 24 * 60 * 60 * 1000);
-}
-
-function normalise(value: string): string {
-  return value.trim().toLocaleLowerCase("fi-FI").replace(/\s+/g, " ");
 }
 
 function normaliseKey(value: string): string {
