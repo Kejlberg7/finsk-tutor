@@ -58,6 +58,10 @@ button:disabled { cursor: not-allowed; opacity: 0.52; }
 .hero-orbit-one { width: 560px; height: 560px; right: -195px; top: -210px; box-shadow: 0 0 0 70px rgb(211 237 170 / 3%), 0 0 0 145px rgb(211 237 170 / 3%); }
 .hero-orbit-two { width: 250px; height: 250px; right: 65px; bottom: -180px; border-width: 40px; border-color: rgb(211 237 170 / 5%); }
 .hero-actions { display: flex; flex-wrap: wrap; gap: 11px; margin-top: 26px; }
+.recovery-notice { max-width: 60ch; margin-top: 17px; padding: 14px 16px; border: 1px solid #7d9a76; border-radius: 12px; background: #f0f6e9; color: #244d38; }
+.recovery-notice strong { font-size: .86rem; }
+.hero-card .recovery-notice p { margin: 6px 0; color: #46664b; font-size: .8rem; line-height: 1.5; }
+.recovery-notice button { padding: 4px 0; border: 0; background: transparent; color: #28583d; font-size: .78rem; font-weight: 750; text-decoration: underline; cursor: pointer; }
 .primary, .secondary, .danger { display: inline-flex; align-items: center; justify-content: center; gap: 9px; min-height: 54px; padding: 0 22px; border: 0; border-radius: 14px; font-weight: 800; transition: transform 0.18s ease, background 0.18s ease; }
 .primary:hover:not(:disabled), .danger:hover:not(:disabled), .secondary:hover:not(:disabled) { transform: translateY(-1px); }
 .primary { background: var(--lime); color: #173b2b; }

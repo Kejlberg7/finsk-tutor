@@ -39,6 +39,29 @@ export function cleanFragments(value: unknown): TranscriptLine[] {
   });
 }
 
+/** Small tutor backchannels must not split a spoken note or a self-corrected answer. */
+export function learnerUtterances(fragments: TranscriptLine[]): string[] {
+  const result: string[] = [];
+  let current = "";
+  let lastEnd: number | undefined;
+  for (const line of compactTranscript(fragments)) {
+    if (line.speaker === "tutor") {
+      if (line.text.trim().split(/\s+/).length > 5) {
+        if (current.trim()) result.push(current.trim());
+        current = "";
+      }
+      continue;
+    }
+    if (current && lastEnd !== undefined && line.startMs !== undefined && line.startMs - lastEnd > 8000) {
+      result.push(current.trim()); current = "";
+    }
+    current += `${current && !/\s$/.test(current) && !/^\s/.test(line.text) ? " " : ""}${line.text}`;
+    lastEnd = line.endMs;
+  }
+  if (current.trim()) result.push(current.trim());
+  return result;
+}
+
 /** Do not score a learner turn until a following tutor turn has finished. */
 export function completedTurnCutoff(fragments: TranscriptLine[]): number {
   if (!fragments.length) return 0;

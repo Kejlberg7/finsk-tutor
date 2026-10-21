@@ -5,6 +5,8 @@ import { apiUsageEvents, ideaNotes, practiceSessions, sessionDiagnostics } from 
 import { isAuthorizedTutorReadRequest } from "@/lib/tutor-read-api-auth";
 import type { RecentSession } from "@/lib/learning-types";
 import { cleanFragments, compactTranscript } from "@/lib/transcript";
+import { parseHistoryQuery } from "@/lib/practice-history";
+import { getPracticeHistory } from "@/lib/practice-history-server";
 
 export async function GET(request: Request) {
   const noStore = { "Cache-Control": "no-store" };
@@ -22,12 +24,18 @@ export async function GET(request: Request) {
   const sessionLimit = readBoundedLimit(url.searchParams.get("sessions"), 5, 20);
   const noteLimit = readBoundedLimit(url.searchParams.get("notes"), 50, 100);
   const diagnosticLimit = readBoundedLimit(url.searchParams.get("diagnostics"), 100, 500);
+  const historyQuery = url.searchParams.has("historyScope") ? parseHistoryQuery({
+    scope: url.searchParams.get("historyScope"), days: Number(url.searchParams.get("historyDays") ?? 7),
+    query: url.searchParams.get("historyQuery"), offset: Number(url.searchParams.get("historyOffset") ?? 0), limit: 8,
+  }) : null;
+  if (url.searchParams.has("historyScope") && !historyQuery) return NextResponse.json({ error: "Ugyldigt historikfilter." }, { status: 400, headers: noStore });
 
   try {
     await ensureDatabaseSchema();
     const db = getDatabase();
     const rows = await db.select({
       id: practiceSessions.id,
+      liveSessionId: practiceSessions.liveSessionId,
       kind: practiceSessions.kind,
       a1Assessment: practiceSessions.a1Assessment,
       startedAt: practiceSessions.startedAt,
@@ -58,6 +66,7 @@ export async function GET(request: Request) {
       ));
       return {
         id: row.id,
+        liveSessionId: row.liveSessionId,
         kind: row.kind === "a1_test" ? "a1_test" : "practice",
         a1Assessment: row.a1Assessment,
         startedAt: row.startedAt.toISOString(),
@@ -98,6 +107,7 @@ export async function GET(request: Request) {
       generatedAt: new Date().toISOString(),
       sessions,
       diagnostics,
+      ...(historyQuery ? { practiceHistory: await getPracticeHistory(historyQuery) } : {}),
       notes: notes.map((note) => ({
         id: note.id,
         sessionId: note.sessionId,

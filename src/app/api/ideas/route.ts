@@ -4,6 +4,7 @@ import { ensureDatabaseSchema, getDatabase, isDatabaseConfigured } from "@/db";
 import { ideaNotes, practiceSessions } from "@/db/schema";
 import { getSessionFromRequest } from "@/lib/auth";
 import { extractIdeaCues } from "@/lib/idea-cue";
+import { saveFeedbackNote } from "@/lib/feedback-notes";
 import type { IdeaNote } from "@/lib/learning-types";
 
 export async function GET(request: Request) {
@@ -43,13 +44,7 @@ export async function POST(request: Request) {
     const session = await db.select({ id: practiceSessions.id }).from(practiceSessions)
       .where(eq(practiceSessions.id, body.sessionId)).limit(1);
     if (!session.length) return NextResponse.json({ error: "Samtalen findes ikke." }, { status: 404 });
-    const inserted = await db.insert(ideaNotes).values({
-      sessionId: body.sessionId,
-      sourceKey: body.sourceKey,
-      kind: cue.kind,
-      content: cue.content,
-    }).onConflictDoNothing().returning();
-    const row = inserted[0] ?? (await db.select().from(ideaNotes).where(eq(ideaNotes.sourceKey, body.sourceKey)).limit(1))[0];
+    const row = await saveFeedbackNote(body.sessionId, cue);
     if (!row) throw new Error("Noten kunne ikke gemmes.");
     return NextResponse.json(toIdeaNote(row), { headers: { "Cache-Control": "no-store" } });
   } catch (error) {

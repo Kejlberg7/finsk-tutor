@@ -108,6 +108,7 @@ async function createSchema(): Promise<void> {
   await sqlClient.unsafe(`ALTER TABLE practice_sessions ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'practice'`);
   await sqlClient.unsafe(`ALTER TABLE practice_sessions ADD COLUMN IF NOT EXISTS a1_assessment jsonb`);
   await sqlClient.unsafe(`ALTER TABLE practice_sessions ADD COLUMN IF NOT EXISTS recap jsonb`);
+  await sqlClient.unsafe(`ALTER TABLE practice_sessions ADD COLUMN IF NOT EXISTS review_state jsonb`);
   await sqlClient.unsafe(`ALTER TABLE practice_sessions ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'started'`);
   await sqlClient.unsafe(`ALTER TABLE practice_sessions ADD COLUMN IF NOT EXISTS progress_cursor integer NOT NULL DEFAULT 0`);
   await sqlClient.unsafe(`ALTER TABLE practice_sessions ADD COLUMN IF NOT EXISTS voice_seconds integer NOT NULL DEFAULT 0`);
@@ -154,4 +155,13 @@ async function createSchema(): Promise<void> {
     )
   `);
   await sqlClient.unsafe(`CREATE UNIQUE INDEX IF NOT EXISTS idea_notes_source_key_unique ON idea_notes (source_key)`);
+  await sqlClient.unsafe(`CREATE TABLE IF NOT EXISTS practice_items (
+    id serial PRIMARY KEY, session_id integer NOT NULL, segment_end integer NOT NULL,
+    finnish text NOT NULL, result text NOT NULL, independent integer NOT NULL DEFAULT 0, evidence text,
+    occurred_at timestamptz NOT NULL DEFAULT now()
+  )`);
+  await sqlClient.unsafe(`ALTER TABLE practice_items ADD COLUMN IF NOT EXISTS independent integer NOT NULL DEFAULT 0`);
+  await sqlClient.unsafe(`ALTER TABLE practice_items ADD COLUMN IF NOT EXISTS evidence text`);
+  await sqlClient.unsafe(`CREATE UNIQUE INDEX IF NOT EXISTS practice_items_segment_unique ON practice_items (session_id, segment_end, finnish)`);
+  await sqlClient.unsafe(`CREATE INDEX IF NOT EXISTS practice_items_session_idx ON practice_items (session_id)`);
 }

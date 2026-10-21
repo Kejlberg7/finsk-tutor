@@ -1,19 +1,25 @@
 import "server-only";
 import { and, asc, count, desc, eq, gte, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
 import { ensureDatabaseSchema, getDatabase, isDatabaseConfigured } from "@/db";
-import { apiUsageEvents, grammarSkills, learnerProfile, practiceSessions, vocabulary } from "@/db/schema";
+import { apiUsageEvents, grammarSkills, learnerProfile, practiceItems, practiceSessions, vocabulary } from "@/db/schema";
+import { buildLiveInstructions, buildTutorBackendInstructions } from "./tutor-prompts";
+import { collectTranscriptFeedback, saveFeedbackNote } from "./feedback-notes";
 import type { LearningSnapshot, SessionRecap, TranscriptLine } from "@/lib/learning-types";
 import { estimateResponseCostUsd, readResponseTokenUsage } from "@/lib/api-cost";
-import { compactTranscript, completedTurnCutoff } from "@/lib/transcript";
-import { buildLessonPlan, nextCorrectDayState, selectReviewWords, type NewTarget } from "@/lib/learning-plan";
+import { compactTranscript, completedTurnCutoff, learnerUtterances } from "@/lib/transcript";
+import { extractIdeaCues } from "./idea-cue";
+import { phraseKey } from "./practice-history";
+import { buildLessonPlan, nextCorrectDayState, nextWordScores, selectReviewWords, type NewTarget } from "@/lib/learning-plan";
 import { a1OralLevel, a1TestEligible, determineA1Outcome, verifyA1Evidence, type A1Assessment, type A1Checks, type SessionKind } from "@/lib/a1-test";
 
 const A1_TEST_INSTRUCTIONS = `
-You are conducting Finsk Tutor's internal ORAL A1 check for one Danish learner. This is not an official CEFR exam and does not assess reading or writing. The learner is often driving: all instructions and feedback must be spoken, never ask them to read, tap or look at a screen. Explain the tasks briefly in English; say Finnish naturally and slowly. The learner may ask for a slower repeat, which is allowed.
+You are conducting Finsk Tutor's internal ORAL A1 check for one Danish learner. This is not an official CEFR exam and does not assess reading or writing. The learner is often driving: all instructions and feedback must be spoken, never ask them to read, tap or look at a screen. Explain the tasks briefly in English; say Finnish naturally and slowly. The learner may ask for a slower repeat, which is allowed. All coaching must be in English; the learner can answer in Danish.
+Backchannel policy: Use very few listening sounds. Wait for the entire learner answer before evaluating it.
+Interruption policy: Yield to the learner and allow pauses and self-corrections.
 
 Start by saying in English: "This is a short oral A1 check, not an official certificate. I'll ask a few everyday questions in Finnish. I'll save feedback when we finish." Then administer four DISTINCT tasks, one prompt at a time, allowing the learner to answer before continuing:
 1. Ask the learner to introduce themselves in Finnish: name, where they live, and one simple thing they do or like. Do not provide a model answer.
-2. Ask at least two short Finnish-only questions about familiar personal or daily topics. Do not translate or reveal the answer before the learner responds. A Danish explanation of the question after their attempt is acceptable; it must not be counted as independent comprehension.
+2. Ask at least two short Finnish-only questions about familiar personal or daily topics. Do not translate or reveal the answer before the learner responds. An English explanation of the question after their attempt is acceptable; it must not be counted as independent comprehension.
 3. Have a two-way exchange: ask and answer simple personal questions in Finnish. The learner must ask at least one question of their own in Finnish, not just repeat yours.
 4. Do a simple everyday role-play, such as ordering a drink or asking for a price/direction. The learner must communicate a need and respond to one follow-up in Finnish.
 
@@ -50,6 +56,7 @@ type SessionReview = {
   upcomingLessons: string[];
   nextSessionReviewOnly: boolean;
   newTargets: NewTarget[];
+  feedbackNotes: Array<{ kind: "idea" | "correction"; content: string; evidence: string }>;
   recap: SessionRecap;
   words: Array<{
     finnish: string;
@@ -57,6 +64,8 @@ type SessionReview = {
     danish: string;
     example: string;
     result: ReviewResult;
+    independent: boolean;
+    evidence: string;
     feedback: string;
   }>;
   grammar: Array<{
@@ -159,104 +168,13 @@ export async function getLearningSnapshot(): Promise<LearningSnapshot> {
   }
 }
 
-export async function getTutorInstructions(kind: SessionKind = "practice"): Promise<{ instructions: string; snapshot: LearningSnapshot }> {
+export async function getTutorInstructions(kind: SessionKind = "practice"): Promise<{ instructions: string; snapshot: LearningSnapshot; backendInstructions: string }> {
   const snapshot = await getLearningSnapshot();
-  if (kind === "a1_test") return { instructions: A1_TEST_INSTRUCTIONS, snapshot };
-  let recentSummaries: string[] = [];
-
-  if (snapshot.memoryReady) {
-    try {
-      const sessions = await getDatabase().select({ summary: practiceSessions.summary, recap: practiceSessions.recap }).from(practiceSessions)
-          .where(and(eq(practiceSessions.status, "completed"), isNotNull(practiceSessions.summary)))
-          .orderBy(desc(practiceSessions.endedAt)).limit(3);
-      recentSummaries = sessions.map((row) => [row.summary,
-        row.recap?.needsWork.length ? `Needs work: ${row.recap.needsWork.join("; ")}` : "",
-      ].filter(Boolean).join(" | ")).filter(Boolean);
-    } catch (error) {
-      console.error("Could not load familiar words", error);
-    }
-  }
-
-  const due = snapshot.dueWords.length
-    ? snapshot.dueWords.map((word) => `${word.finnish} (${word.english})`).join(", ")
-    : "none yet";
-  const secure = snapshot.wordProgress.filter((word) => word.mastery >= 4)
-    .sort((a, b) => (a.lastSeenAt ?? "").localeCompare(b.lastSeenAt ?? ""))
-    .slice(0, 2).map((word) => word.finnish).join(", ") || "none yet";
-  const repair = snapshot.wordProgress.filter((word) => word.correctCount === 0 && word.incorrectCount > 0 && word.lastFeedback)
-    .sort((a, b) => (a.lastSeenAt ?? "").localeCompare(b.lastSeenAt ?? ""))
-    .slice(0, 1).map((word) => `${word.finnish}: ${word.lastFeedback}`).join(" | ") || "none";
-  const upcoming = snapshot.upcomingLessons.map((lesson, index) => `${index + 1}. ${lesson}`).join("; ");
-
-  const instructions = `
-You are a patient Finnish conversation tutor for one Danish learner.
-
-LANGUAGE AND AUDIO
-- The learner may speak Danish or English. Understand both.
-- Give explanations and coaching in English unless the learner explicitly asks for Danish.
-- Finnish is the target language. Say Finnish examples naturally, clearly, and a little slowly.
-- This is hands-free audio, often used while driving. Never ask the learner to read, tap, type, or look at the screen.
-
-TEACHING METHOD
-- For a genuinely new visit, begin with a brief English greeting and state today's focus. If prior conversation is supplied for a reconnection, skip the greeting and continue immediately.
-- Teach one short Finnish phrase at a time, then pause for the learner to repeat it.
-- In every lesson block, practise both directions: give a short Finnish phrase and ask what it means in Danish; also give a Danish meaning and ask the learner to produce the Finnish. Alternate directions instead of making the learner only repeat Finnish.
-- When introducing a phrase, give its meaning once. Later, test understanding by asking for the Danish meaning without immediately supplying it.
-- In a Finnish-to-Danish comprehension test, say only the Finnish phrase before asking for its Danish meaning. Never give the English translation or gloss immediately before that question; it gives away the answer. Wait for the learner's attempt, then explain or correct. If they ask for help or cannot answer, give the meaning afterward and retest later without a hint.
-- Check one or two selected older phrases briefly, then move to the planned new target unless this session is explicitly review-only. The full due backlog is not a script or a quota. Every session should also revisit a few phrases from earlier sessions across the 30 minutes.
-- Give more practice to words with low scores or repeated errors. Reuse high-score words only as occasional spaced review or sentence building.
-- Unless the learner has asked for review only, introduce one or two genuinely new, connected words or a useful phrase after each short review burst. In a 30-minute session, aim for several small new targets, not a long loop of known sentences. Revisit the new target later in a different context. Do not overwhelm with a large vocabulary list.
-- Correct gently: if you clearly heard the learner's Finnish attempt, quote their exact attempt first ("You said: …"), then say the corrected Finnish slowly ("A natural form is: …"), and explain the specific difference in one short English sentence. Do not invent an exact quote from uncertain speech recognition; ask for a repeat instead. If the attempt was already acceptable, say so rather than manufacturing an error.
-- After an attempt, say briefly whether the word was right or what you corrected. Only comment on pronunciation when you can clearly hear a specific issue; otherwise ask for another attempt.
-- Recycle older words in new short sentences. Do not randomly change topic.
-- If speech recognition seems uncertain, ask the learner to repeat instead of confidently marking it wrong.
-- If the learner says "note til senere" or describes an app idea/correction naturally, continue listening and let the app save it; do not require a special phrase or ask them to repeat it. Do not claim it was saved unless the app confirms it.
-- A note or app-feedback comment is not a request to stop the lesson. Only end when the learner clearly asks to stop the conversation (for example, "stop samtalen", "jeg er færdig", "lad os stoppe nu"). If unclear, ask a brief clarification while keeping the lesson open.
-- End naturally when the learner asks to stop; the application saves the transcript and updates the plan afterward.
-
-SESSION PACING AND PROGRESSION
-- The learner's goal is about 30 minutes of Finnish practice per session. Treat 30 minutes as the target, not a hard limit: do not announce that the lesson is finished, suggest pausing, or start wrapping up before 30 minutes unless the learner asks to stop or pause. Keep the lesson moving continuously until the learner clearly asks to stop. The learner may stop earlier if they choose; at around 30 minutes, acknowledge the target and ask whether they want to stop or continue.
-- Organize a 30-minute session into roughly five or six connected lesson blocks of 4–6 minutes, and keep transitions flowing without waiting for the learner to request each next block.
-- A block should contain a small number of targeted retrieval questions, balanced Finnish-to-Danish comprehension and Danish-to-Finnish production, and a short varied exchange. By default add one connected new target after a brief retrieval burst, then use it in two contexts before moving on. If the learner explicitly wants review only, use fresh combinations of known material instead.
-- Do not limit cumulative review to one or two questions for the entire session. Retrieve several phrases from different earlier sessions across the full 30-minute practice, especially near the end, while keeping each individual review burst short.
-- If the learner asks for a brief review of earlier material, do that for a few prompts and then return to a connected new target. If they explicitly ask for a review-only session, practise only what has already been learned, or say not to add new words, stop introducing new vocabulary and grammar for the rest of that session; do not sneak in a “small new twist.”
-- A review-only request overrides the default plan for THIS session. Do not assume it applies to a future session unless the learner explicitly asks for that.
-- Advance after a phrase is correct in a couple of varied contexts. Avoid asking for the same sentence to be repeated several times after a clear success; revisit it later in a different prompt or translation direction.
-- When asking a retrieval question, do not give the full answer as a "hint". Start with no hint, then one partial cue only if needed.
-- If the learner says the material is repetitive or asks for something new, acknowledge once and switch to a genuinely different target. If they ask to review old material instead, do that instead of introducing a new target.
-- If the learner explicitly asks for new things after a long review, switch now to a genuinely new, connected phrase or concept. Do at most one brief review burst, then spend the next blocks on the new target; do not drift back into a long sequence of familiar prompts.
-- Do not ask "want to continue?" at the end of each block; just make a natural transition and teach the next item. The learner should not need to repeatedly say "fortsæt" to keep a 30-minute session going.
-- After a few successful attempts, briefly acknowledge progress and immediately begin the next logical block. Do not end the lesson or wait for the application.
-- If the learner says "next", "continue", "go on", "næste", or asks for the next lesson, move on immediately and start teaching. Do not merely describe what the next lesson will contain.
-- Treat the planned next lesson below as the starting point, not as the only lesson allowed in this session.
-- Choose logical continuations yourself. A useful sequence is: brief retrieval from older sessions, a planned target or review set, comprehension and production in both directions, then a mixed review of older phrases before ending. Continue with further connected blocks if time remains.
-- Never say that you are thinking, preparing, loading, checking the database, or waiting for a lesson plan. If planning is delayed, keep the learner engaged with a review question and then continue.
-- The application may send a progress checkpoint while you speak. Use it to avoid repeating completed drills and to move to the next connected block when the learner is ready.
-- A checkpoint is background work, not a pause or end to the voice conversation. Keep listening and teaching; never ask the learner to restart or press a button.
-- If the voice connection resumes after an interruption, continue from the supplied recent conversation. Do not greet, reintroduce the lesson, or ask already answered questions.
-
-FINNISH ACCURACY ANCHORS
-- For "Mitä kuuluu?", a simple model answer is "Ihan hyvää, kiitos." For "Miten menee?", "Ihan hyvin, kiitos." Never teach "Olen hyvää, kiitos."
-- "Olen töissä" means "I am at work"; "menen töihin" means "I am going to work". "Menen kotiin tänään" is also a valid activity/plan in answer to "Mitä teet tänään?"; do not mark a grammatically valid answer wrong merely because you expected a different example.
-- Do not treat imperfect speech-to-text spelling alone as evidence of a pronunciation error.
-- When asked about kun/sitten versus jos/niin, teach the meaning contrast, not a memorized word-pair rule: kun usually introduces a time/when clause, jos a condition/if clause; sitten commonly marks a later step or "then" in time; niin may mark the start of the main clause after either jos or kun, especially in speech, and is often optional. Do not claim niin is required after jos or forbidden after kun, or that sitten and niin are always interchangeable. Give one short contrastive example at the learner's level, answer the learner's "why" first, then return to practice.
-- More generally, when the learner asks why a form or alternative was used, pause the drill, explain the actual meaning/grammar distinction with a minimal pair, check understanding once, then continue. Do not repeat the same unexplained answer.
-
-LEARNER MEMORY
-- Approximate level: ${snapshot.level}
-- Current focus: ${snapshot.currentFocus}
-- Planned next lesson: ${snapshot.nextLesson}
-- Review-only explicitly planned for this session: ${snapshot.reviewOnlyPlanned ? "yes — do not add new material" : "no — progress after brief review"}
-- Provisional upcoming lesson blocks: ${upcoming}
-- Selected review targets for this session (at most five, not the whole backlog): ${due}
-- Secure examples (optional quick maintenance, no drilling): ${secure}
-- One earlier learner error to revisit with a corrected form (NEVER present the error itself as model Finnish): ${repair}
-- Recent sessions, newest first: ${recentSummaries.join(" | ") || "No completed session recorded yet."}
-
-Use this memory as guidance, not as a script. Do not tell the learner about database scores or internal tracking.
-`;
-
-  return { instructions, snapshot };
+  return {
+    instructions: kind === "a1_test" ? A1_TEST_INSTRUCTIONS : buildLiveInstructions(snapshot),
+    backendInstructions: buildTutorBackendInstructions(snapshot),
+    snapshot,
+  };
 }
 
 export async function beginPracticeSession(kind: SessionKind = "practice"): Promise<number | null> {
@@ -307,6 +225,7 @@ export async function checkpointPracticeSession(id: number, fragments: Transcrip
   const freshTranscript = compactTranscript(fragments.slice(session.progressCursor, processUntil));
   await db.update(practiceSessions).set({ transcript: fullTranscript })
     .where(and(eq(practiceSessions.id, id), eq(practiceSessions.status, "started")));
+  await collectTranscriptFeedback(id, fragments);
   if (!freshTranscript.length) return noChange();
 
   const review = await analyseTranscript(fullTranscript.slice(-40), await getLearningSnapshot(), freshTranscript, id);
@@ -315,7 +234,7 @@ export async function checkpointPracticeSession(id: number, fragments: Transcrip
     const locked = await tx.select({ progressCursor: practiceSessions.progressCursor, status: practiceSessions.status })
       .from(practiceSessions).where(eq(practiceSessions.id, id)).for("update").limit(1);
     if (locked[0]?.status !== "started" || locked[0]?.progressCursor !== session.progressCursor) return;
-    await applyReview(review, false, tx);
+    await applyReview(review, false, tx, id, processUntil);
     await tx.update(practiceSessions).set({ progressCursor: processUntil }).where(eq(practiceSessions.id, id));
     applied = true;
   });
@@ -347,6 +266,7 @@ export async function completePracticeSession(id: number, fragments: TranscriptL
     .where(eq(practiceSessions.id, id));
 
   try {
+    await collectTranscriptFeedback(id, fragments);
     if (session.kind === "a1_test") {
       let assessment: A1Assessment;
       try { assessment = interrupted || cleanTranscript.filter((line) => line.speaker === "dig").length < 5
@@ -372,7 +292,7 @@ export async function completePracticeSession(id: number, fragments: TranscriptL
     }
     const review = await analyseTranscript(cleanTranscript, await getLearningSnapshot(), freshTranscript, id);
     await db.transaction(async (tx) => {
-      await applyReview(review, true, tx);
+      await applyReview(review, true, tx, id, fragments.length);
       await tx.update(practiceSessions)
         .set({ summary: review.summary, recap: review.recap, endedAt: new Date(), status: "completed", progressCursor: fragments.length })
         .where(eq(practiceSessions.id, id));
@@ -464,14 +384,16 @@ async function analyseTranscript(transcript: TranscriptLine[], memory: LearningS
       model: "gpt-6-luna",
       reasoning: { effort: "low" },
       store: false,
-      max_output_tokens: 2500,
+      max_output_tokens: 3500,
       input: [
         {
           role: "system",
           content:
-            `You evaluate a Finnish tutoring transcript. Transcription can be imperfect, so only mark an item correct or incorrect when the learner's attempt and tutor feedback clearly support it. Otherwise use introduced. If a word was attempted repeatedly, use the most recent clear attempt. A tutor correction may itself be wrong; do not penalize a valid learner answer just because the tutor expected a different scripted answer.
-Extract words and grammar results only from scoringTranscript; transcript and priorLearning provide context for summary and planning, not evidence of a new scored attempt. Ignore app-feedback notes as lesson material. If scoringTranscript is empty, return empty words and grammar arrays. One result per canonical word or SHORT valid Finnish phrase per segment, not every full sentence or inflected restatement. If the learner made a mistake, use the corrected VALID Finnish form as the key and result=incorrect; put the learner's mistake in feedback. Never store an ungrammatical learner attempt as a model phrase. If a word was attempted repeatedly, use the most recent clear attempt. A tutor correction may itself be wrong; do not penalize a valid learner answer just because the tutor expected a different scripted answer. Mention pronunciation only if the tutor explicitly corrected pronunciation; do not infer accent from transcript spelling. Use stable lowercase ASCII keys for grammar topics.
+            `You evaluate a Finnish tutoring transcript. Evaluate completed learner answers independently of the tutor's praise. Transcription can be imperfect: score only clearly supported attempts; otherwise use introduced. A tutor correction may itself be wrong; accept valid alternatives.
+Extract words and grammar results only from scoringTranscript; transcript and priorLearning provide context for summary and planning, not evidence of a new scored attempt. Ignore app-feedback notes as lesson material. If scoringTranscript is empty, return empty words and grammar arrays. One result per canonical word or SHORT valid Finnish phrase per segment, not every full sentence or inflected restatement. If the learner made a mistake, use the corrected VALID Finnish form as the key and result=incorrect; put the learner's mistake in feedback. Never store an ungrammatical learner attempt as a model phrase. Prefer the last INDEPENDENT retrieval attempt. A successful assisted repeat after a failed retrieval does not erase that recall error: score incorrect with the failed learner quote and mention the repair in feedback. If there were only repetitions, evaluate the most recent clear repetition with independent=false. Mention pronunciation only if the tutor explicitly corrected pronunciation; do not infer accent from transcript spelling. Use stable lowercase ASCII keys for grammar topics.
 Write the summary and recap in concise English. Recap.progress must name up to 3 concrete achievements supported by the transcript; recap.needsWork names up to 3 specific remaining difficulties; recap.nextStep states one actionable next move. Empty arrays are okay; do not invent progress or claim a word is mastered after one success.
+For each word result, evidence must be an EXACT short quote from the learner in scoringTranscript. Without a clear learner attempt use introduced and evidence="". independent=true only for unaided retrieval/production or comprehension, with no answer supplied immediately beforehand. Echoing a model or a correction has independent=false even when accurate. Listen through self-corrections and full-duplex backchannels; do not score partial words separately. Evaluate Finnish independently of the tutor's praise: 'paljonko tämä maksaa on' has an extra on; 'uuden' is not 'yhden'; 'menään' is not the correct model for 'I go' (menen). Do not give a correct result simply because the tutor said perfect.
+Extract explicit app ideas, requested fixes and persistent teaching preferences into feedbackNotes, even if the learner says them naturally in Danish (for example 'en note til mig selv senere'). Return a concise Danish content and an EXACT quote from learner speech as evidence. Ordinary Finnish mistakes, requests to repeat once and grammar questions are not app feedback. Return [] when none. Never use tutor speech as evidence.
 For the NEXT session, propose two genuinely new connected Finnish targets with English meanings in newTargets, absent from priorLearning. Prefer a different everyday situation if work/home/greetings were repeated. Do not propose existing phrases with trivial punctuation or inflection changes as new. The lesson should mix short older-phrase retrieval, Finnish-to-Danish comprehension, Danish-to-Finnish production, and new material. Do not build all blocks around mastered sentences.
 Set nextSessionReviewOnly=true ONLY if the learner clearly requested the NEXT session be review-only or contain no new material. A request for review during this session, or a general comment that some days can be review-only, does NOT carry over. If true, return no newTargets. The learner's preference overrides default progression.
 Never plan a full drill of phrases the learner already used successfully. The level may be A0, A1, A2, B1, B2, C1, or C2 with a short qualifier. Return structured JSON only.`,
@@ -519,6 +441,9 @@ Never plan a full drill of phrases the learner already used successfully. The le
                   finnish: { type: "string" }, english: { type: "string" },
                 }, required: ["finnish", "english"], additionalProperties: false },
               },
+              feedbackNotes: { type: "array", items: { type: "object", properties: {
+                kind: { type: "string", enum: ["idea", "correction"] }, content: { type: "string" }, evidence: { type: "string" },
+              }, required: ["kind", "content", "evidence"], additionalProperties: false } },
               recap: { type: "object", properties: {
                 progress: { type: "array", items: { type: "string" } },
                 needsWork: { type: "array", items: { type: "string" } },
@@ -534,9 +459,11 @@ Never plan a full drill of phrases the learner already used successfully. The le
                     danish: { type: "string" },
                     example: { type: "string" },
                     result: { type: "string", enum: ["correct", "incorrect", "introduced"] },
+                    independent: { type: "boolean" },
+                    evidence: { type: "string" },
                     feedback: { type: "string" },
                   },
-                  required: ["finnish", "english", "danish", "example", "result", "feedback"],
+                  required: ["finnish", "english", "danish", "example", "result", "independent", "evidence", "feedback"],
                   additionalProperties: false,
                 },
               },
@@ -554,7 +481,7 @@ Never plan a full drill of phrases the learner already used successfully. The le
                 },
               },
             },
-            required: ["summary", "level", "currentFocus", "nextLesson", "upcomingLessons", "nextSessionReviewOnly", "newTargets", "recap", "words", "grammar"],
+            required: ["summary", "level", "currentFocus", "nextLesson", "upcomingLessons", "nextSessionReviewOnly", "newTargets", "feedbackNotes", "recap", "words", "grammar"],
             additionalProperties: false,
           },
         },
@@ -568,13 +495,32 @@ Never plan a full drill of phrases the learner already used successfully. The le
   if (sessionId) await storeResponseUsage(sessionId, payload);
   const output = responseText(payload);
   if (!output) throw new Error("OpenAI returnerede ingen sessionsanalyse.");
-  return JSON.parse(output) as SessionReview;
+  const review = JSON.parse(output) as SessionReview;
+  const learnerEvidence = learnerUtterances(scoringTranscript).map(phraseKey);
+  for (const word of review.words) {
+    const quote = phraseKey(word.evidence ?? "");
+    if (!quote || !learnerEvidence.some((line) => line.includes(quote))) {
+      word.result = "introduced"; word.independent = false; word.evidence = "";
+    }
+  }
+  if (sessionId) {
+    const utterances = learnerUtterances(transcript);
+    for (const note of (review.feedbackNotes ?? []).slice(0, 5)) {
+      const evidence = phraseKey(note.evidence);
+      if (evidence.length < 20 || !utterances.some((line) => phraseKey(line).includes(evidence))) continue;
+      const cues = extractIdeaCues(note.evidence);
+      await saveFeedbackNote(sessionId, cues.find((cue) => cue.explicit) ?? cues[0] ?? note);
+    }
+  }
+  return review;
 }
 
 async function applyReview(
   review: SessionReview,
   updateProfile: boolean,
   db: Parameters<Parameters<ReturnType<typeof getDatabase>["transaction"]>[0]>[0],
+  sessionId: number,
+  segmentEnd: number,
 ): Promise<void> {
   const now = new Date();
   const upcomingLessons = (Array.isArray(review.upcomingLessons) ? review.upcomingLessons : [])
@@ -615,8 +561,10 @@ async function applyReview(
     if (!finnish) continue;
     const existing = await db.select().from(vocabulary).where(eq(vocabulary.finnish, finnish)).for("update").limit(1);
     const current = existing[0];
-    const scores = nextScores(current?.mastery ?? 0, current?.correctCount ?? 0, current?.incorrectCount ?? 0, word.result);
-    const dayState = nextCorrectDayState(current?.correctDayCount ?? 0, current?.lastCorrectDay ?? null, word.result === "correct", now);
+    const dayState = nextCorrectDayState(current?.correctDayCount ?? 0, current?.lastCorrectDay ?? null,
+      word.result === "correct" && word.independent, now);
+    const scores = nextWordScores(current?.mastery ?? 0, current?.correctCount ?? 0, current?.incorrectCount ?? 0,
+      word.result, word.independent, dayState.correctDayCount);
     const values = {
       finnish,
       english: word.english.trim(),
@@ -630,9 +578,12 @@ async function applyReview(
         ? word.feedback.trim().slice(0, 240)
         : current?.lastFeedback ?? null,
       lastSeenAt: now,
-      nextReviewAt: nextReviewDate(scores.mastery, word.result, now),
+      nextReviewAt: nextReviewDate(scores.mastery, word.result === "correct" && !word.independent ? "introduced" : word.result, now),
     };
     await db.insert(vocabulary).values(values).onConflictDoUpdate({ target: vocabulary.finnish, set: values });
+    await db.insert(practiceItems).values({ sessionId, segmentEnd, finnish, result: word.result,
+      independent: word.independent ? 1 : 0, evidence: word.evidence?.slice(0, 500) || null })
+      .onConflictDoNothing();
   }
 
   for (const skill of uniqueBy(review.grammar, (item) => normaliseKey(item.key))) {

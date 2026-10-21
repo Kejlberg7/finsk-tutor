@@ -16,6 +16,8 @@ const DETAIL_KEYS = new Set([
   "reason", "phase", "peerState", "iceState", "channelState", "visibility", "online",
   "httpStatus", "responseStatus", "responseId", "clientEventId", "parameter",
   "attempt", "elapsedSeconds", "voiceSeconds", "closeConfirmed", "browser",
+  "liveSessionId", "serverEventId", "offsetMs", "transcriptIndex", "lastInputEndMs", "lastOutputEndMs",
+  "lastResponseId", "lastErrorCode", "recentEvents", "toolName", "callId", "totalPracticeSeconds",
 ]);
 
 /** Accept only small, structured diagnostics. Never store SDP, audio, transcripts or raw API events. */

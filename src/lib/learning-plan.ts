@@ -155,3 +155,12 @@ export function nextCorrectDayState(count: number, lastDay: string | null, corre
   const day = copenhagenDay(now);
   return { correctDayCount: count + (lastDay === day ? 0 : 1), lastCorrectDay: day };
 }
+
+/** Echoing an answer is practice, but cannot establish independent long-term recall. */
+export function nextWordScores(mastery: number, correctCount: number, incorrectCount: number,
+  result: "correct" | "incorrect" | "introduced", independent: boolean, correctDays: number) {
+  if (result === "incorrect") return { mastery: Math.max(0, mastery - 1), correctCount, incorrectCount: incorrectCount + 1 };
+  if (result !== "correct") return { mastery, correctCount, incorrectCount };
+  const cap = !independent ? 2 : correctDays < 2 ? 3 : 5;
+  return { mastery: Math.max(mastery, Math.min(cap, mastery + 1)), correctCount: correctCount + 1, incorrectCount };
+}

@@ -1,5 +1,6 @@
 import { integer, jsonb, numeric, pgTable, serial, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
 import type { A1Assessment } from "@/lib/a1-test";
+import type { HistoryState } from "@/lib/practice-history";
 
 export const learnerProfile = pgTable("learner_profile", {
   id: integer("id").primaryKey().default(1),
@@ -57,6 +58,7 @@ export const practiceSessions = pgTable("practice_sessions", {
   transcript: jsonb("transcript"),
   summary: text("summary"),
   recap: jsonb("recap").$type<{ progress: string[]; needsWork: string[]; nextStep: string }>(),
+  reviewState: jsonb("review_state").$type<HistoryState>(),
   status: text("status").notNull().default("started"),
   progressCursor: integer("progress_cursor").notNull().default(0),
   voiceSeconds: integer("voice_seconds").notNull().default(0),
@@ -97,3 +99,14 @@ export const ideaNotes = pgTable("idea_notes", {
   status: text("status").notNull().default("open"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [uniqueIndex("idea_notes_source_key_unique").on(table.sourceKey)]);
+
+export const practiceItems = pgTable("practice_items", {
+  id: serial("id").primaryKey(),
+  sessionId: integer("session_id").notNull(),
+  segmentEnd: integer("segment_end").notNull(),
+  finnish: text("finnish").notNull(),
+  result: text("result").notNull(),
+  independent: integer("independent").notNull().default(0),
+  evidence: text("evidence"),
+  occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [uniqueIndex("practice_items_segment_unique").on(table.sessionId, table.segmentEnd, table.finnish)]);

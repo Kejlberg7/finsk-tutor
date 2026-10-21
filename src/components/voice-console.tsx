@@ -6,6 +6,9 @@ import { extractIdeaCues } from "@/lib/idea-cue";
 import { estimateResponseCostUsd, readResponseTokenUsage } from "@/lib/api-cost";
 import { sessionPacingUpdate } from "@/lib/session-pacing";
 import { shouldAutoResume } from "@/lib/session-continuity";
+import { LiveToolRunner } from "@/lib/live-tool-runner";
+import { tutorIntervention } from "@/lib/tutor-interventions";
+import { RECOVERY_KEY, makeSessionRecovery, parseSessionRecovery, type SessionRecovery } from "@/lib/session-recovery";
 import { flushSessionDiagnostics, reportSessionDiagnostic } from "@/lib/session-diagnostics-client";
 import type { DiagnosticDetails } from "@/lib/session-diagnostics";
 import { closeReasonLabel } from "@/lib/session-diagnostics";
@@ -56,6 +59,9 @@ type LiveEvent = {
   delta?: string;
   start_ms?: number;
   end_ms?: number;
+  event_id?: string;
+  offset_ms?: number;
+  delegation_id?: string;
   error?: { message?: string; code?: string; type?: string; param?: string; client_event_id?: string };
   event?: {
     type?: string;
@@ -79,10 +85,12 @@ export default function VoiceConsole() {
   const [wordSearch, setWordSearch] = useState("");
   const [progressMessage, setProgressMessage] = useState("Ordstatus opdateres under samtalen.");
   const [ideaMessage, setIdeaMessage] = useState("");
+  const [recoveringNotes, setRecoveringNotes] = useState(false);
   const [wakeNotice, setWakeNotice] = useState("");
   const [active, setActive] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [recovery, setRecovery] = useState<SessionRecovery | null>(null);
   const peerRef = useRef<RTCPeerConnection | null>(null);
   const channelRef = useRef<RTCDataChannel | null>(null);
   const microphoneRef = useRef<MediaStream | null>(null);
@@ -109,12 +117,22 @@ export default function VoiceConsole() {
   const recoveringRef = useRef(false);
   const scheduleReconnectRef = useRef<(resumeTranscript: TranscriptLine[]) => void>(() => undefined);
   const acquireWakeLockRef = useRef<() => Promise<void>>(async () => undefined);
+  const keepRecoveryRef = useRef<(reason: string) => void>(() => undefined);
   const wakeLockRef = useRef<WakeLockSentinel | null>(null);
   const wakeLockRequestRef = useRef<Promise<void> | null>(null);
   const connectedAtRef = useRef(0);
   const lastVoiceUsageSecondsRef = useRef(0);
   const savedVoiceUsageSecondsRef = useRef(0);
   const practiceStartedAtRef = useRef(0);
+  const practiceElapsedRef = useRef(0);
+  const tutorGuardTextRef = useRef("");
+  const interventionAtRef = useRef<Record<string, number>>({});
+  const recentEventsRef = useRef<string[]>([]);
+  const lastErrorCodeRef = useRef<string | null>(null);
+  const lastResponseIdRef = useRef<string | null>(null);
+  const liveSessionIdRef = useRef<string | null>(null);
+  const goalPromptedRef = useRef(false);
+  const moderationPendingRef = useRef(false);
   const manualStopRef = useRef(false);
   const finishRef = useRef<((reason: string, confirmed?: boolean) => void) | null>(null);
   const unmountedRef = useRef(false);
@@ -145,6 +163,39 @@ export default function VoiceConsole() {
     sessionId = appSessionIdRef.current, attemptId = attemptIdRef.current) {
     if (!attemptId) return;
     reportSessionDiagnostic({ attemptId, sessionId, eventType, code, message, details });
+  }
+
+  function elapsedPracticeSeconds() {
+    return practiceElapsedRef.current + (practiceStartedAtRef.current ? Math.max(0, Math.floor((Date.now() - practiceStartedAtRef.current) / 1000)) : 0);
+  }
+
+  function pacePractice() {
+    if (sessionKindRef.current !== "practice") return;
+    const elapsed = elapsedPracticeSeconds();
+    if (elapsed >= 30 * 60 && goalPromptedRef.current) return;
+    if (elapsed >= 30 * 60) goalPromptedRef.current = true;
+    sendEvent({ type: "session.instructions.append", event_id: crypto.randomUUID(), delegation_id: null, content: sessionPacingUpdate(elapsed) });
+  }
+
+  function keepRecovery(reason: string) {
+    const saved = makeSessionRecovery(transcriptRef.current, elapsedPracticeSeconds(), reason, sessionKindRef.current, appSessionIdRef.current);
+    if (!saved.transcript.length) return;
+    setRecovery(saved);
+    try { sessionStorage.setItem(RECOVERY_KEY, JSON.stringify(saved)); } catch { /* Still available in memory. */ }
+  }
+
+  function clearRecovery() {
+    setRecovery(null);
+    try { sessionStorage.removeItem(RECOVERY_KEY); } catch { /* Storage is optional. */ }
+  }
+
+  function resumeSavedConversation() {
+    if (!recovery) return;
+    practiceElapsedRef.current = recovery.elapsedSeconds;
+    practiceStartedAtRef.current = 0;
+    transcriptRef.current = recovery.transcript;
+    setTranscript(recovery.transcript);
+    void start(recovery.transcript, false, recovery.kind, recovery.sessionId);
   }
 
   async function refreshHistory() {
@@ -187,6 +238,18 @@ export default function VoiceConsole() {
     }
   }
 
+  async function recoverMissedNotes() {
+    setRecoveringNotes(true);
+    try {
+      const response = await fetch("/api/ideas/recover", { method: "POST", credentials: "same-origin", signal: AbortSignal.timeout(60_000) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(apiErrorMessage(result));
+      setIdeaMessage(`${result.checked} samtaler gennemgået. ${result.found} noter fundet eller allerede gemt.`);
+      await refreshIdeas();
+    } catch (error) { setIdeaMessage(error instanceof Error ? error.message : "Kunne ikke finde tidligere noter."); }
+    finally { setRecoveringNotes(false); }
+  }
+
   async function saveResponseUsage(responseUsage: { responseId: string; model: string; usage: unknown }) {
     const sessionId = appSessionIdRef.current;
     const attemptId = attemptIdRef.current;
@@ -209,6 +272,9 @@ export default function VoiceConsole() {
 
   useEffect(() => {
     unmountedRef.current = false;
+    const recoveryLoad = window.setTimeout(() => {
+      try { setRecovery(parseSessionRecovery(sessionStorage.getItem(RECOVERY_KEY))); } catch { /* Storage is optional. */ }
+    }, 0);
     void flushSessionDiagnostics();
     void fetch("/api/learning", { cache: "no-store", credentials: "same-origin" })
       .then(async (response) => {
@@ -244,6 +310,7 @@ export default function VoiceConsole() {
       if (recoveringRef.current && !reconnectTimerRef.current) scheduleReconnectRef.current([...transcriptRef.current]);
     };
     const onPageHide = () => {
+      if (peerRef.current && !manualStopRef.current) keepRecoveryRef.current("page_closed");
       if (peerRef.current) diagnose("client.pagehide", null, null, {
         peerState: peerRef.current.connectionState, channelState: channelRef.current?.readyState ?? "missing",
       });
@@ -264,6 +331,7 @@ export default function VoiceConsole() {
     window.addEventListener("error", onUnhandledError);
     window.addEventListener("unhandledrejection", onUnhandledRejection);
     return () => {
+      window.clearTimeout(recoveryLoad);
       document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener("pageshow", onVisibilityChange);
       window.removeEventListener("online", onOnline);
@@ -285,6 +353,7 @@ export default function VoiceConsole() {
 
   useEffect(() => { scheduleReconnectRef.current = scheduleReconnect; });
   useEffect(() => { acquireWakeLockRef.current = acquireWakeLock; });
+  useEffect(() => { keepRecoveryRef.current = keepRecovery; });
 
   async function acquireWakeLock() {
     if (wakeLockRef.current || wakeLockRequestRef.current || document.visibilityState !== "visible"
@@ -332,6 +401,16 @@ export default function VoiceConsole() {
     });
     transcriptRef.current = next;
     setTranscript(next);
+    if (speaker === "tutor" && sessionKindRef.current === "practice") {
+      tutorGuardTextRef.current = (tutorGuardTextRef.current + event.delta).slice(-700);
+      const intervention = tutorIntervention(tutorGuardTextRef.current, elapsedPracticeSeconds());
+      if (intervention && Date.now() - (interventionAtRef.current[intervention.code] ?? 0) > 60_000) {
+        interventionAtRef.current[intervention.code] = Date.now();
+        tutorGuardTextRef.current = "";
+        sendEvent({ type: "session.instructions.append", event_id: crypto.randomUUID(), delegation_id: null, content: intervention.instruction });
+        diagnose("app.tutor_intervention", intervention.code, null, { transcriptIndex: rawTranscriptRef.current.length });
+      }
+    } else if (speaker === "dig") tutorGuardTextRef.current = "";
     if (speaker === "dig") {
       pendingUserRef.current += event.delta;
       if (ideaTimerRef.current) window.clearTimeout(ideaTimerRef.current);
@@ -446,17 +525,16 @@ export default function VoiceConsole() {
           ? `Ordstatus gemt kl. ${new Intl.DateTimeFormat("da-DK", { hour: "2-digit", minute: "2-digit" }).format(new Date())}.`
           : "Venter på en afsluttet øvelse før næste opdatering.");
         if (advanced) {
-          const elapsedSeconds = practiceStartedAtRef.current
-            ? Math.floor((Date.now() - practiceStartedAtRef.current) / 1_000)
-            : 0;
           sendEvent({
             type: "session.thinking.append",
             event_id: `progress_${result.progressCursor}`,
             delegation_id: null,
-            content: `Background learning state, not an instruction to pause: successful items ${result.correctWords.join(", ") || "none"}; items needing another attempt ${result.difficultWords.join(", ") || "none"}. Do not repeat successful drills. ${result.learning.reviewOnlyPlanned ? "Continue the explicitly planned review-only session with varied prompts; no new material." : "Move to a new connected target after at most one brief older-phrase check, unless the learner explicitly requested review only for this session."} ${sessionPacingUpdate(elapsedSeconds)} Keep the current conversation flowing.`,
+            content: `Saved learning state: successful items ${result.correctWords.slice(0, 5).join(", ") || "none"}; items needing another attempt ${result.difficultWords.slice(0, 5).join(", ") || "none"}. Scores are estimates; use saved dated history for review requests.`,
           });
+          pacePractice();
         }
         void refreshHistory();
+        void refreshIdeas();
       } catch (error) {
         diagnose("app.checkpoint_failed", error instanceof Error ? error.name : "unknown", error instanceof Error ? error.message : null,
           { phase: "progress" }, sessionId, attemptId);
@@ -515,7 +593,9 @@ export default function VoiceConsole() {
     }, Math.min(1_000 * 2 ** (attempt - 1), 12_000));
   }
 
-  async function start(resumeTranscript: TranscriptLine[] = [], automatic = false, requestedKind: SessionKind = "practice") {
+  async function start(resumeTranscript: TranscriptLine[] = [], automatic = false, requestedKind: SessionKind = "practice", resumeSessionId?: number | null) {
+    const resuming = resumeTranscript.length > 0;
+    const previousSessionId = resumeSessionId ?? appSessionIdRef.current;
     if (!automatic) sessionKindRef.current = requestedKind;
     const kind = sessionKindRef.current;
     const attemptId = crypto.randomUUID();
@@ -523,11 +603,15 @@ export default function VoiceConsole() {
     diagnose("client.start", automatic ? "automatic_resume" : "manual_start", null, {
       online: navigator.onLine, visibility: document.visibilityState, browser: navigator.userAgent.slice(0, 160),
     }, null);
-    if (!automatic) {
+    if (!automatic) manualStopRef.current = false;
+    if (!automatic && !resuming) {
       manualStopRef.current = false;
       recoveringRef.current = false;
       reconnectAttemptsRef.current = 0;
       practiceStartedAtRef.current = 0;
+      practiceElapsedRef.current = 0;
+      goalPromptedRef.current = false;
+      clearRecovery();
       lastVoiceUsageSecondsRef.current = 0;
       savedVoiceUsageSecondsRef.current = 0;
       notedFeedbackRef.current.clear();
@@ -535,6 +619,12 @@ export default function VoiceConsole() {
       transcriptRef.current = [];
     }
     closeReasonRef.current = null;
+    lastErrorCodeRef.current = null;
+    moderationPendingRef.current = false;
+    lastResponseIdRef.current = null;
+    recentEventsRef.current = [];
+    interventionAtRef.current = {};
+    tutorGuardTextRef.current = "";
     setStatus(automatic ? "Genoptager samtalen…" : "Forbinder…");
     setConnecting(true);
     rawTranscriptRef.current = [];
@@ -548,6 +638,8 @@ export default function VoiceConsole() {
     if (!automatic) setSaving(false);
 
     let finished = false;
+    let connectionSessionId: number | null = null;
+    const connectionFragments: TranscriptLine[] = [];
     let phase = "peer_creation";
     try {
       const peer = new RTCPeerConnection();
@@ -573,6 +665,33 @@ export default function VoiceConsole() {
       phase = "data_channel";
       const channel = peer.createDataChannel("oai-events");
       channelRef.current = channel;
+      const toolRunner = new LiveToolRunner(async (call) => {
+        if (!connectionSessionId || finished) throw new Error("Forbindelsen er lukket.");
+        diagnose("app.tool_started", call.name, null, { callId: call.callId }, connectionSessionId, attemptId);
+        const response = await fetch("/api/session/tool", {
+          method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" },
+          signal: AbortSignal.timeout(20_000),
+          body: JSON.stringify({ sessionId: connectionSessionId, attemptId, ...call,
+            ...(call.name === "save_feedback" ? { fragments: connectionFragments } : {}) }),
+        }).catch((error) => {
+          diagnose("app.tool_failed", call.name, error instanceof Error ? error.message : null,
+            { callId: call.callId }, connectionSessionId, attemptId);
+          throw error;
+        });
+        const result = await response.json().catch(() => ({ error: "Værktøjet returnerede et ugyldigt svar." }));
+        if (!response.ok || result.error) {
+          diagnose("app.tool_failed", call.name, null, { callId: call.callId, httpStatus: response.status }, connectionSessionId, attemptId);
+          return { error: apiErrorMessage(result) };
+        }
+        diagnose("app.tool_completed", call.name, null, { callId: call.callId }, connectionSessionId, attemptId);
+        if (call.name === "save_feedback") {
+          setIdeaMessage("Feedback gemt til senere."); void refreshIdeas();
+        }
+        return result;
+      }, (event) => {
+        if (finished || channel.readyState !== "open") throw new Error("Forbindelsen er lukket.");
+        channel.send(JSON.stringify(event));
+      });
       const finish = (reason: string, confirmed = false) => {
         if (finished || unmountedRef.current) return;
         finished = true;
@@ -581,7 +700,14 @@ export default function VoiceConsole() {
           reason, closeConfirmed: confirmed, peerState: peer.connectionState,
           iceState: peer.iceConnectionState, channelState: channel.readyState,
           elapsedSeconds: connectedAtRef.current ? Math.max(0, Math.round((Date.now() - connectedAtRef.current) / 1_000)) : 0,
+          liveSessionId: liveSessionIdRef.current, lastResponseId: lastResponseIdRef.current,
+          lastErrorCode: lastErrorCodeRef.current, transcriptIndex: connectionFragments.length,
+          totalPracticeSeconds: elapsedPracticeSeconds(), recentEvents: recentEventsRef.current.slice(-5).join(","),
         });
+        practiceElapsedRef.current = elapsedPracticeSeconds();
+        practiceStartedAtRef.current = 0;
+        if (!manualStopRef.current && reason !== "close_requested") keepRecovery(reason);
+        else clearRecovery();
         void flushIdea();
         const context = transcriptRef.current.length ? [...transcriptRef.current] : resumeTranscript;
         const recover = shouldAutoResume(reason, manualStopRef.current);
@@ -629,8 +755,13 @@ export default function VoiceConsole() {
         }
       };
       channel.onmessage = (message) => {
+        if (finished) return;
         const event = safeLiveEvent(message.data);
         if (!event) return;
+        recentEventsRef.current = [...recentEventsRef.current, event.type ?? "unknown"].slice(-8);
+        if (typeof event.event?.response?.id === "string") lastResponseIdRef.current = event.event.response.id;
+        void toolRunner.handle(event).catch((error) => diagnose("app.tool_transport_failed", "continuation_failed",
+          error instanceof Error ? error.message : null, null, connectionSessionId, attemptId));
         if (event.type === "session.started") {
           diagnose("live.session_started", null, null, { peerState: peer.connectionState, channelState: channel.readyState });
           recoveringRef.current = false;
@@ -640,7 +771,7 @@ export default function VoiceConsole() {
             type: "session.instructions.append",
             event_id: automatic ? "resume_conversation" : kind === "a1_test" ? "start_a1_test" : "start_lesson",
             delegation_id: null,
-            content: automatic
+            content: automatic || resuming
               ? kind === "a1_test" ? "The previous A1 check was interrupted and cannot be combined with this new call. Briefly tell the learner that you are restarting the four short test tasks, then begin the test from the start. Do not switch to a normal lesson." : "Continue the interrupted Finnish lesson now, without a greeting or repeated review. Use the supplied conversation history and teach the next useful step."
               : kind === "a1_test" ? "Begin the internal oral A1 check now. Briefly explain in English, then ask the first test question. Do not coach or reveal answers before attempts." : "Open the lesson now with a very brief English greeting and today's focus, then give the first short Finnish phrase. Normally mix brief review with small new targets; honor any review-only preference in the learner memory.",
           });
@@ -674,16 +805,36 @@ export default function VoiceConsole() {
           diagnose("live.session_closed", event.reason ?? "unknown", null, {
             reason: event.reason ?? "unknown", voiceSeconds: event.usage?.seconds ?? null,
             peerState: peer.connectionState, channelState: channel.readyState,
+            liveSessionId: liveSessionIdRef.current, lastResponseId: lastResponseIdRef.current,
+            lastErrorCode: lastErrorCodeRef.current, serverEventId: event.event_id ?? null,
+            transcriptIndex: connectionFragments.length, offsetMs: event.offset_ms ?? null,
           });
           finish(event.reason ?? "connection_lost", true);
         }
-        if (event.type === "session.input_transcript.delta") updateTranscript("dig", event);
-        if (event.type === "session.output_transcript.delta") updateTranscript("tutor", event);
+        if (event.delta && ["session.input_transcript.delta", "session.output_transcript.delta"].includes(event.type ?? "")) {
+          const speaker = event.type === "session.input_transcript.delta" ? "dig" : "tutor";
+          connectionFragments.push({ speaker, text: event.delta, startMs: event.start_ms, endMs: event.end_ms });
+          updateTranscript(speaker, event);
+          if (speaker === "tutor" && moderationPendingRef.current) {
+            moderationPendingRef.current = false;
+            setStatus("Forbundet — tal bare.");
+            diagnose("live.speech_resumed", "after_moderation", null, null, connectionSessionId, attemptId);
+          }
+        }
         if (event.type === "error") {
+          lastErrorCodeRef.current = event.error?.code ?? event.error?.type ?? "unknown";
           diagnose("live.error", event.error?.code ?? event.error?.type ?? "unknown", event.error?.message ?? null, {
             parameter: event.error?.param ?? null, clientEventId: event.error?.client_event_id ?? null,
+            liveSessionId: liveSessionIdRef.current, serverEventId: event.event_id ?? null,
+            offsetMs: event.offset_ms ?? null, transcriptIndex: connectionFragments.length,
+            lastInputEndMs: [...connectionFragments].reverse().find((x) => x.speaker === "dig")?.endMs ?? null,
+            lastOutputEndMs: [...connectionFragments].reverse().find((x) => x.speaker === "tutor")?.endMs ?? null,
+            lastResponseId: lastResponseIdRef.current,
           });
-          if (event.error?.message) setStatus(event.error.message);
+          if (event.error?.code === "content_filter") {
+            moderationPendingRef.current = true;
+            setStatus("Sikkerhedsfilteret stoppede en replik. Forbindelsen er stadig åben, indtil en afslutning er bekræftet.");
+          } else if (event.error?.message) setStatus(event.error.message);
         }
       };
 
@@ -701,7 +852,8 @@ export default function VoiceConsole() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           sdp, attemptId, kind,
-          ...(automatic ? { resumeTranscript: resumeTranscript.slice(-30).map((line) => ({ speaker: line.speaker, text: line.text.slice(-600) })) } : {}),
+          ...(resuming ? { resumeTranscript: resumeTranscript.slice(-30).map((line) => ({ speaker: line.speaker, text: line.text.slice(-600) })) } : {}),
+          ...(resuming && previousSessionId ? { resumeFromSessionId: previousSessionId } : {}),
         }),
       });
       if (!response.ok) {
@@ -712,10 +864,13 @@ export default function VoiceConsole() {
         transport?: { sdp?: string };
         app_session_id?: number | null;
         learning?: LearningSnapshot;
+        session?: { id?: string };
       };
       if (!result.transport?.sdp) throw new Error("OpenAI returnerede ikke et SDP-svar.");
       if (manualStopRef.current || unmountedRef.current) throw new Error("Samtalen blev afbrudt under opstart.");
       appSessionIdRef.current = result.app_session_id ?? null;
+      connectionSessionId = result.app_session_id ?? null;
+      liveSessionIdRef.current = result.session?.id ?? null;
       diagnose("client.session_created", null, null, { httpStatus: response.status, online: navigator.onLine });
       lastVoiceUsageSecondsRef.current = 0;
       savedVoiceUsageSecondsRef.current = 0;
@@ -723,16 +878,21 @@ export default function VoiceConsole() {
       phase = "remote_description";
       await peer.setRemoteDescription({ type: "answer", sdp: result.transport.sdp });
       connectedAtRef.current = Date.now();
-      if (!practiceStartedAtRef.current) practiceStartedAtRef.current = connectedAtRef.current;
+      practiceStartedAtRef.current = connectedAtRef.current;
+      clearRecovery();
       setActive(true);
       setConnecting(false);
       void acquireWakeLock();
       checkpointTimerRef.current = window.setInterval(() => { void checkpoint(); }, 150_000);
-      heartbeatTimerRef.current = window.setInterval(() => diagnose("client.heartbeat", null, null, {
+      heartbeatTimerRef.current = window.setInterval(() => {
+        pacePractice();
+        diagnose("client.heartbeat", null, null, {
         peerState: peer.connectionState, iceState: peer.iceConnectionState,
         channelState: channel.readyState, online: navigator.onLine, visibility: document.visibilityState,
         elapsedSeconds: Math.round((Date.now() - connectedAtRef.current) / 1_000),
-      }), 60_000);
+          totalPracticeSeconds: elapsedPracticeSeconds(),
+        });
+      }, 60_000);
     } catch (error) {
       diagnose("client.start_failed", error instanceof Error ? error.name : "unknown", error instanceof Error ? error.message : null, {
         phase, online: navigator.onLine, peerState: peerRef.current?.connectionState ?? "missing",
@@ -848,13 +1008,19 @@ export default function VoiceConsole() {
                 if (recoveringRef.current) {
                   reconnectAttemptsRef.current = 0;
                   void start([...transcriptRef.current], true);
-                } else void start();
+                } else if (recovery) resumeSavedConversation();
+                else void start();
               }} disabled={active || connecting || saving}>
-                <span className="play-symbol" aria-hidden="true">▶</span>{connecting ? "Forbinder…" : recoveringRef.current ? "Genoptag samtale" : "Start samtale"}
+                <span className="play-symbol" aria-hidden="true">▶</span>{connecting ? "Forbinder…" : recovery || recoveringRef.current ? "Genoptag samtale" : "Start samtale"}
               </button>
               <button className="danger" type="button" onClick={stop} disabled={!active && !connecting}>Stop og gem</button>
               <Link className="secondary stats-entry" href="/statistik">Se din statistik <span aria-hidden="true">↗</span></Link>
             </div>
+            {recovery && !active && !connecting && <div className="recovery-notice" role="status">
+              <strong>{recovery.reason === "content" ? "Sikkerhedsfilteret afbrød samtalen" : "Din afbrudte samtale kan genoptages"}</strong>
+              <p>Din seneste kontekst og {formatDuration(recovery.elapsedSeconds)} øvetid er bevaret. Genoptag, når du er klar.{recovery.kind === "a1_test" ? " En afbrudt A1-test starter forfra." : ""}</p>
+              <button type="button" disabled={saving} onClick={() => { void start(); }}>Start en helt ny samtale i stedet</button>
+            </div>}
             <div className="session-status" role="status"><span className={active ? "status-light active" : "status-light"} aria-hidden="true" />{status}</div>
             <div className="live-progress" role="status">{progressMessage}</div>
             {wakeNotice && <div className="live-progress" role="status">{wakeNotice}</div>}
@@ -1049,6 +1215,8 @@ export default function VoiceConsole() {
             <section className="archive-card" aria-labelledby="ideas-title">
               <span className="card-kicker">TIL SENERE</span>
               <h3 id="ideas-title">Idéer og rettelser</h3>
+              <button className="secondary" type="button" disabled={recoveringNotes || active || connecting}
+                onClick={() => { void recoverMissedNotes(); }}>{recoveringNotes ? "Gennemgår samtaler…" : "Find oversete noter"}</button>
               <p className="archive-help">Du kan sige en idé eller rettelse til senere med dine egne ord. Tydeligt beskrevne ønsker og problemer med appen kan blive gemt automatisk.</p>
               {ideaMessage ? <p className="idea-message" role="status">{ideaMessage}</p> : null}
               {ideasError ? <p className="empty-copy">{ideasError}</p> : ideas.length ? (

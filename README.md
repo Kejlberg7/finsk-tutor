@@ -73,6 +73,36 @@ API'et svarer `401`, hvis tokenen mangler/er forkert, og returnerer aldrig data
 uden gyldig autorisation. Når miljøvariablen tilføjes i Vercel, kræves et nyt
 deployment, før endpointet er aktivt.
 
+Tilføj `historyScope=this_week` (eller `recent_days`, `strong`, `due`, `all`) for
+også at hente øvede udtryk med dateret evidens. `historyDays=7`,
+`historyOffset=0` og `historyQuery=` afgrænser opslaget; hver side indeholder
+højst otte udtryk. `practiceHistory.nextOffset` giver næste side. API'et er
+fortsat skrivebeskyttet. Samtalerne inkluderer deres OpenAI Live-session-ID,
+så en filterafbrydelse kan knyttes til den konkrete samtale og fejl-tidslinje.
+
+## Historik og noter under samtalen
+
+Live-modellen har en kort samtaleinstruktion og en Responses-backend med
+`get_practice_history` og `save_feedback`. Browseren fuldfører funktionskaldene
+via det loginbeskyttede `/api/session/tool` og returnerer alle resultater før
+backendens `response.create`. Ingen API-nøgler sendes til browseren.
+
+Historiklisten fastholdes under en gennemgang og følger med ved genoptagelse.
+Nye vurderede øveforsøg gemmes pr. samtale i `practice_items`. For ældre
+samtaler bruges bogstavelige transkriptmatch; de markeres særskilt og beviser
+ikke korrekthed. Eftersigelse alene kan i nye vurderinger højst bygge en score
+på 2/5; stærke udtryk kræver selvstændig genkaldelse på forskellige dage.
+
+Noter opsamles både undervejs og fra det gemte transkript. Eksplicitte ønsker
+kan desuden gemmes med backendværktøjet. Ens noter og gentagne forsøg gemmes
+idempotent. Knappen “Find oversete noter” genlæser de seneste otte samtaler.
+
+En filterfejl, der kun afbryder en replik, lukker ikke automatisk forbindelsen.
+Hvis OpenAI afslutter med `reason=content`, gemmes kontekst og øvetid lokalt
+til knappen “Genoptag samtale”; sikkerhedsafslutninger genstartes ikke
+automatisk. Fejlloggen forbinder session-ID, backend-response-ID og placering
+i det eksisterende transkript uden at kopiere taleindhold ind i fejlloggen.
+
 Når samme token står i `.env.local`, kan den seneste kontekst hentes fra
 terminalen uden at åbne browseren:
 

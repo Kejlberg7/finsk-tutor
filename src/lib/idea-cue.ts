@@ -3,14 +3,14 @@ export type IdeaCue = { kind: "idea" | "correction"; content: string; explicit: 
 /** Keep automatic notes narrow: ordinary Finnish mistakes are lesson material, not app bugs. */
 export function extractIdeaCues(utterance: string): IdeaCue[] {
   const text = utterance.trim();
-  const laterNote = text.match(/(?:^|[.!?]\s*)(?:(?:det\s+(?:er\s+)?|endnu\s+en\s+)?note\s+(?:til\s+)?senere)(?:\s+er)?\s*(?:at\s*)?[:,.-]?\s*(.+)$/i);
+  const laterNote = text.match(/\bnote\s+(?:(?:til\s+)?(?:mig\s+selv\s+)?(?:til\s+)?senere)(?:\s+er)?\s*[,.:;-]?\s*(?:at\s*[,.:;-]?\s*)?([\s\S]+)$/i);
   if (laterNote) {
     const content = laterNote[1].trim().replace(/^[\s.,!?;:-]+/, "").slice(0, 1_500);
     if (content.length >= 5) return [{ kind: "correction", content, explicit: true }];
   }
 
   const explicit = text.match(
-    /(?:^|[.!?]\s*)(?:kan du\s+|vil du\s+)?(?:not[eé]r|gem|husk)(?:\s+lige)?\s+(?:en\s+|et\s+)?(id[eé]|rettelse|fejl|bug|feature|funktion|ændring)(?:\s+til\s+appen)?\s*[:,-]?\s+(.+)$/i,
+    /\b(?:not[eé]r|gem|husk)(?:\s+lige)?\s+(?:en\s+|et\s+)?(id[eé]|rettelse|fejl|bug|feature|funktion|ændring)(?:\s+til\s+appen)?\s*[:,-]?\s+([\s\S]+)$/i,
   );
   if (explicit) {
     const content = explicit[2].trim().slice(0, 1_500);
@@ -22,6 +22,21 @@ export function extractIdeaCues(utterance: string): IdeaCue[] {
   }
 
   const notes: IdeaCue[] = [];
+  if (/(?:altid|skal|hold|i stedet|i\s+stedet)/i.test(text) && /engelsk/i.test(text)
+    && /(?:dansk|accent|forklar|snakke|sige|brug|hold)/i.test(text)) {
+    notes.push({ kind: "correction", content: "Tutoren skal bruge engelsk til forklaringer og øveinstruktioner; jeg kan svare på dansk. Finsk bruges til selve øvelserne.", explicit: false });
+  }
+  if (/(?:tidligere|tidligere\s+dage|sidste\s+(?:par|to|2|tre|3)\s+dage|i\s+går|flere\s+dage)/i.test(text)
+    && /(?:øve|øvet|repet|huske|glem|refres|find\s+flere)/i.test(text)) {
+    notes.push({ kind: "correction", content: "Repetér de præcise udtryk fra de seneste øvedage og bekræft hukommelsen på tværs af dage; slå dem op i historikken.", explicit: false });
+  }
+  if (/(?:ordene|ord|brudt\s+ned|stille\s+og\s+roligt)/i.test(text)
+    && /(?:hver\s+for\s+sig|en\s+ad\s+gangen|een\s+af\s+gangen|én\s+ad\s+gangen|specifikke\s+ord|brudt\s+ned)/i.test(text)) {
+    notes.push({ kind: "correction", content: "Del nye sætninger op i ord eller korte bidder og forklar ordenes betydning, før hele sætningen øves.", explicit: false });
+  }
+  if (/(?:30\s+min|halv\s*time)/i.test(text) && /(?:fortsæt|snakket|op\s+på|kort)/i.test(text)) {
+    notes.push({ kind: "correction", content: "Tutoren skal holde øvelserne i gang mod 30 minutter uden gentagne opfordringer til at fortsætte.", explicit: false });
+  }
   if (/(?:gemmer|gemning|status|checkpoint)/i.test(text)
     && /(?:afbryd|stopper|starte?\s+(?:samtalen\s+)?igen|trykke?\s+(?:på\s+)?knappen)/i.test(text)) {
     notes.push({ kind: "correction", content: "Samtalen afbrydes under løbende gemning, så jeg må starte den igen. Den skal fortsætte håndfrit.", explicit: false });
@@ -39,7 +54,7 @@ export function extractIdeaCues(utterance: string): IdeaCue[] {
   if (/(?:blive\s+ved\s+med\s+at\s+sige\s+)?(?:fortsæt|fortsætte)/i.test(text)
     && /(?:det\s+er\s+du|ikke\s+mig|ikke\s+jeg|selv\s+fortsætte|hele\s+tiden)/i.test(text)
     && /(?:note|samtale|snakke|sige)/i.test(text)) {
-    notes.push({ kind: "correction", content: "Hold samtalen naturligt i gang i cirka 20 minutter. Tutoren skal selv fortsætte til næste øvelse uden at jeg gentagne gange skal sige ‘fortsæt’. En note til senere må ikke misforstås som et ønske om at stoppe.", explicit: false });
+    notes.push({ kind: "correction", content: "Hold samtalen naturligt i gang i cirka 30 minutter. Tutoren skal selv fortsætte til næste øvelse uden at jeg gentagne gange skal sige ‘fortsæt’. En note til senere må ikke misforstås som et ønske om at stoppe.", explicit: false });
   }
   if (/(?:oversætte|oversættelse|forstå|hvad\s+det\s+(?:betyder|bliver\s+sagt))/i.test(text)
     && /finsk/i.test(text) && /dansk/i.test(text)) {

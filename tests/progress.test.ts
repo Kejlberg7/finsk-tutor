@@ -40,9 +40,9 @@ test("natural note-to-self wording and learning requests are saved without a mag
     explicit: true,
   });
   assert.deepEqual(extractIdeaCue("Jeg tænker også, det er en note til senere, at jeg også skal kunne oversætte fra finsk til dansk, så jeg forstår, hvad der bliver sagt."), {
-    kind: "idea",
-    content: "Træn begge retninger: Jeg skal både formulere ting på finsk og oversætte det, tutoren siger på finsk, til dansk, så øvelsen tester min forståelse.",
-    explicit: false,
+    kind: "correction",
+    content: "jeg også skal kunne oversætte fra finsk til dansk, så jeg forstår, hvad der bliver sagt.",
+    explicit: true,
   });
   assert.deepEqual(extractIdeaCue("Endnu en note senere er at, nogle gange må en ny dag gerne bare være at øve alle de gamle ting, vi har haft, så det ikke altid bliver nye ord."), {
     kind: "correction",

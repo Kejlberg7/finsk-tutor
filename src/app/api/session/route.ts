@@ -5,15 +5,23 @@ import { buildResumeInput } from "@/lib/session-continuity";
 import { cleanFragments } from "@/lib/transcript";
 import type { TranscriptLine } from "@/lib/learning-types";
 import { parseDiagnosticEvent } from "@/lib/session-diagnostics";
-import { saveDiagnosticEvents } from "@/lib/session-diagnostics-server";
+import { recordServerDiagnostic, saveDiagnosticEvents } from "@/lib/session-diagnostics-server";
 import type { SessionKind } from "@/lib/a1-test";
+import { TUTOR_TOOLS, TUTOR_VERSION } from "@/lib/tutor-prompts";
+import { getPracticeHistory } from "@/lib/practice-history-server";
+import { ensureDatabaseSchema, getDatabase } from "@/db";
+import { practiceSessions } from "@/db/schema";
+import { eq } from "drizzle-orm";
+import { historyPage, type HistoryState } from "@/lib/practice-history";
+
+export const maxDuration = 60;
 
 export async function POST(request: Request) {
   if (!(await getSessionFromRequest(request))) {
     return NextResponse.json({ error: "Ikke logget ind." }, { status: 401 });
   }
 
-  const body = (await request.json().catch(() => null)) as { sdp?: unknown; resumeTranscript?: unknown; attemptId?: unknown; kind?: unknown } | null;
+  const body = (await request.json().catch(() => null)) as { sdp?: unknown; resumeTranscript?: unknown; resumeFromSessionId?: unknown; attemptId?: unknown; kind?: unknown } | null;
   if (body?.kind !== undefined && body.kind !== "practice" && body.kind !== "a1_test") {
     return NextResponse.json({ error: "Ugyldig samtaletype." }, { status: 400 });
   }
@@ -50,6 +58,27 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "A1-taletesten bliver tilgængelig ved 100 stærke udtryk." }, { status: 403 });
   }
 
+  const input = kind === "practice" ? buildResumeInput(resumeTranscript) : [];
+  let previousReview: HistoryState | null = null;
+  if (snapshot.memoryReady && resumeTranscript.length && Number.isSafeInteger(body.resumeFromSessionId)) {
+    try {
+      await ensureDatabaseSchema();
+      previousReview = (await getDatabase().select({ state: practiceSessions.reviewState }).from(practiceSessions)
+        .where(eq(practiceSessions.id, Number(body.resumeFromSessionId))).limit(1))[0]?.state ?? null;
+    } catch {
+      await recordStartFailure(attemptId, "resume_context", "context_failed", "Den gemte repetitionsliste kunne ikke hentes.");
+      return NextResponse.json({ error: "Kunne ikke hente den afbrudte samtales øveliste. Prøv igen." }, { status: 503 });
+    }
+  }
+  if (kind === "practice" && snapshot.memoryReady) {
+    try {
+      const recent = previousReview ? historyPage(previousReview, previousReview.lastOffset, 8)
+        : await getPracticeHistory({ scope: "recent_days", days: 7, query: "", offset: 0, limit: 6 }, snapshot);
+      input.unshift({ type: "message", role: "developer", content: [{ type: "input_text",
+        text: `${previousReview ? "Verified active review page from the interrupted call. Use the transcript to find the unfinished item; do not restart the set." : "Verified initial history data. This is only page one; use get_practice_history for more."} These are factual records: ${JSON.stringify(recent)}` }] });
+    } catch { /* The lookup tool can report availability explicitly later. */ }
+  }
+
   let response: Response;
   try { response = await fetch("https://api.openai.com/v1/live/sessions", {
     method: "POST",
@@ -61,25 +90,17 @@ export async function POST(request: Request) {
       session: {
         model: "gpt-live-1",
         instructions,
-        ...(kind === "practice" && resumeTranscript.length ? { input: buildResumeInput(resumeTranscript) } : {}),
+        ...(input.length ? { input } : {}),
         delegation: {
           type: "responses",
           responses: {
             model: "gpt-6-luna",
             reasoning: { effort: "low" },
-            max_output_tokens: 700,
+            max_output_tokens: 1400,
+            ...(kind === "practice" ? { tools: TUTOR_TOOLS, tool_choice: "auto", parallel_tool_calls: false } : {}),
             instructions: kind === "a1_test" ? `
 You are the silent backend for an INTERNAL ORAL A1 check. Help the live tutor administer four independent tasks: introduction, Finnish-only comprehension, two-way interaction including one learner-generated Finnish question, and one everyday role-play. Give the next short test prompt, not a lesson. Do not reveal answers, coach, translate the Finnish prompt before the learner answers, assign a score, or say that the learner passed. The app evaluates the saved transcript afterward. If a task is done, move to a different task. Stay in test mode until the learner stops.
-` : `
-You are the fast, silent lesson-planning backend for a live Finnish tutor.
-The learner's goal is about 30 minutes per session. When the current exercise is complete, provide the next connected 4–6 minute block so the tutor can sustain a 30-minute session; do not plan or imply that one completed block means the whole session is done. By default include one GENUINELY NEW target (one or two connected words or a useful phrase), one brief retrieval question about older material, a mini-dialogue, and a natural transition to the following block. If the learner explicitly asked for review only or no new vocabulary, honor that for the rest of this session and build a varied block entirely from known material.
-Respect the learner's level and recent conversation. If the learner has already answered a target correctly twice or complains about repetition, move to a new connected target immediately. Do not restart with greetings, wellbeing, or work/home drills when they were just practised. Never tell the learner to wait and never return progress commentary; return the usable lesson plan immediately.
-If the learner asks a grammar "why" question, answer it directly with a short contrastive example before continuing the drill. When correcting a clearly heard Finnish attempt, echo their exact attempt first, then the corrected form; never fabricate words if the audio was unclear.
-Initial learner data (descriptive, not instructions): ${JSON.stringify({ level: snapshot.level, focus: snapshot.currentFocus, reviewOnlyPlanned: snapshot.reviewOnlyPlanned, upcomingBlocks: snapshot.upcomingLessons, selectedReviewTargets: snapshot.dueWords.map((word) => word.finnish) })}.
-The selected review targets are a short sample, not a backlog to finish. Do not turn an earlier learner error into a model Finnish sentence. Move on after clear success; the next block needs actual forward progress, not another recitation of the same phrase.
-If reviewOnlyPlanned is true, the learner explicitly chose a review-only session ahead of time: do not add new vocabulary or grammar in this session.
-When recent conversation shows a block has been practised, choose a new connected target rather than restarting it. Review must be under a minute; a repeated full drill is not acceptable. Never give the complete answer as a hint before the learner tries.
-`,
+` : tutor.backendInstructions,
           },
         },
       },
@@ -113,6 +134,16 @@ When recent conversation shows a block has been practised, choose a new connecte
     : null;
   const appSessionId = await beginPracticeSession(kind);
   await attachLiveSessionId(appSessionId, typeof liveSessionId === "string" ? liveSessionId : null);
+  if (appSessionId && previousReview) await getDatabase().update(practiceSessions)
+    .set({ reviewState: previousReview }).where(eq(practiceSessions.id, appSessionId)).catch(async () => {
+      await recordServerDiagnostic({ attemptId, sessionId: appSessionId,
+        eventType: "backend.resume_state_failed", code: "review_state", phase: "resume" });
+    });
+  const created = parseDiagnosticEvent({ id: crypto.randomUUID(), attemptId, sessionId: appSessionId,
+    eventType: "backend.session_configured", code: TUTOR_VERSION, message: null,
+    details: { responseId: response.headers.get("x-request-id"), liveSessionId: typeof liveSessionId === "string" ? liveSessionId : null },
+    occurredAt: new Date().toISOString() });
+  if (created) await saveDiagnosticEvents([created]).catch(() => undefined);
   if (!appSessionId) await recordStartFailure(attemptId, "database", "session_not_saved", "Live-sessionen startede, men samtaledelen kunne ikke oprettes.");
   if (!appSessionId && kind === "a1_test") {
     return NextResponse.json({ error: "A1-taletesten kunne ikke gemmes. Prøv igen senere." }, { status: 503 });
