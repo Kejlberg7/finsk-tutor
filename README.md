@@ -61,6 +61,8 @@ Selvstændig succes spreder tjek over 1, 3, 7 og efter bekræftelse 14–60 dage
 Der vælges højst ét gammelt højscore-udtryk i startplanens korte review.
 Milepæle, A1-adgang, historikværktøjer og statistik bruger samme bekræftede tal.
 Læse-API'et viser `expressionProgress` og `learningEvidence` for efterkontrol.
+Diagnostikken `backend.expression_analysis` viser antal foreslåede, godkendte og
+afviste forsøg pr. analyse uden at kopiere elevens svar ind i fejlloggen.
 
 Forsiden viser de seneste samtaler med transskript og en indbakke til idéer.
 Under samtalen kan man sige “Notér idé: …” eller “Notér rettelse: …”.

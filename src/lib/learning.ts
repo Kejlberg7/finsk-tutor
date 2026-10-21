@@ -12,6 +12,7 @@ import { phraseKey } from "./practice-history";
 import { buildLessonPlan, isDue, selectReviewWords, type NewTarget } from "@/lib/learning-plan";
 import { expressionKey, expressionStageLabel, isStrong, projectExpressions, verifiedAttempts, type ExpressionAttempt, type ProposedAttempt } from "./expression-progress";
 import { a1OralLevel, a1TestEligible, determineA1Outcome, verifyA1Evidence, type A1Assessment, type A1Checks, type SessionKind } from "@/lib/a1-test";
+import { recordServerDiagnostic } from "./session-diagnostics-server";
 
 const A1_TEST_INSTRUCTIONS = `
 You are conducting Finsk Tutor's internal ORAL A1 check for one Danish learner. This is not an official CEFR exam and does not assess reading or writing. The learner is often driving: all instructions and feedback must be spoken, never ask them to read, tap or look at a screen. Explain the tasks briefly in English; say Finnish naturally and slowly. The learner may ask for a slower repeat, which is allowed. All coaching must be in English; the learner can answer in Danish.
@@ -511,6 +512,7 @@ Never plan a full drill of phrases the learner already used successfully. The le
   const output = responseText(payload);
   if (!output) throw new Error("OpenAI returnerede ingen sessionsanalyse.");
   const review = JSON.parse(output) as SessionReview;
+  const proposedCount = review.words.reduce((n, word) => n + (word.attempts?.length ?? 0), 0);
   const learnerEvidence = learnerUtterances(scoringTranscript).map(phraseKey);
   for (const word of review.words) {
     word.attempts = verifiedAttempts(word.finnish, word.attempts ?? [], numberedTurns, range);
@@ -518,6 +520,18 @@ Never plan a full drill of phrases the learner already used successfully. The le
     if (!quote || !learnerEvidence.some((line) => line.includes(quote))) {
       word.result = "introduced"; word.independent = false; word.evidence = "";
     }
+  }
+  // A suggested future target or a fabricated word is not an expression already met.
+  review.words = review.words.filter((word) => word.attempts.length > 0 || scoringTranscript.some((line) =>
+    ` ${expressionKey(line.text)} `.includes(` ${expressionKey(word.finnish)} `)));
+  if (sessionId) {
+    const accepted = review.words.flatMap((word) => word.attempts);
+    await recordServerDiagnostic({ sessionId, eventType: "backend.expression_analysis", code: "recall-v2",
+      phase: "progress", message: JSON.stringify({ proposed: proposedCount, accepted: accepted.length,
+        rejected: proposedCount - accepted.length, from: range.from, to: range.to,
+        production: accepted.filter((a) => a.mode === "production" && a.independent).length,
+        comprehension: accepted.filter((a) => a.mode === "comprehension" && a.independent).length,
+        assisted: accepted.filter((a) => !a.independent || a.mode === "repeat").length }) });
   }
   if (sessionId) {
     const utterances = learnerUtterances(transcript);
